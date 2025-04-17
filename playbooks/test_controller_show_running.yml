@@ -1,0 +1,68 @@
+---
+# Simple test playbook to fetch running configuration from Aruba controller
+- name: Test Show Running Configuration on Aruba Controller
+  hosts: aruba_controller_master
+  gather_facts: no
+  
+  tasks:
+    - name: Test basic connectivity
+      cli_command:
+        command: "show version"
+      register: version_output
+      ignore_errors: yes
+      
+    - name: Display version if successful
+      debug:
+        msg: "Successfully connected to {{ inventory_hostname }}"
+        var: version_output.stdout_lines
+      when: version_output is defined and version_output.stdout is defined
+      
+    - name: Try fetching running configuration
+      cli_command:
+        command: "show configuration"
+      register: config_output
+      ignore_errors: yes
+      
+    - name: Try alternative configuration command if first fails
+      cli_command:
+        command: "show running-config"
+      register: config_output2
+      ignore_errors: yes
+      when: config_output is defined and (config_output.stdout is not defined or config_output.failed | default(false))
+      
+    - name: Display successful configuration fetch
+      debug:
+        msg: "Successfully fetched configuration from {{ inventory_hostname }}"
+      when: (config_output is defined and config_output.stdout is defined) or 
+            (config_output2 is defined and config_output2.stdout is defined)
+            
+    - name: Display errors if both commands fail
+      debug:
+        msg: 
+          - "Failed to fetch configuration from {{ inventory_hostname }}"
+          - "First attempt error: {{ config_output.stderr | default('Unknown error') }}"
+          - "Second attempt error: {{ config_output2.stderr | default('Not attempted') if config_output2 is defined else 'Not attempted' }}"
+      when: (config_output is defined and (config_output.stdout is not defined or config_output.failed | default(false))) and
+            (config_output2 is defined and (config_output2.stdout is not defined or config_output2.failed | default(false))) or
+            (config_output is defined and (config_output.stdout is not defined or config_output.failed | default(false)) and config_output2 is not defined)
+      
+    - name: Create output directory
+      delegate_to: localhost
+      file:
+        path: "/var/lib/awx/projects/test_output"
+        state: directory
+      run_once: true
+      
+    - name: Save first configuration output when successful
+      delegate_to: localhost
+      copy:
+        content: "{{ config_output.stdout }}"
+        dest: "/var/lib/awx/projects/test_output/{{ inventory_hostname }}_config.txt"
+      when: config_output is defined and config_output.stdout is defined
+      
+    - name: Save second configuration output when successful
+      delegate_to: localhost
+      copy:
+        content: "{{ config_output2.stdout }}"
+        dest: "/var/lib/awx/projects/test_output/{{ inventory_hostname }}_config_alt.txt"
+      when: config_output2 is defined and config_output2.stdout is defined
