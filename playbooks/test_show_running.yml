@@ -1,0 +1,36 @@
+---
+# Simple test playbook to just fetch running configuration
+- name: Test Show Running Configuration
+  hosts: all
+  gather_facts: no
+  
+  tasks:
+    - name: Fetch running configuration
+      cli_command:
+        command: "show running-config"
+      register: config_output
+      ignore_errors: yes
+      
+    - name: Display successful fetches
+      debug:
+        msg: "Successfully fetched configuration from {{ inventory_hostname }}"
+      when: config_output is defined and config_output.stdout is defined
+
+    - name: Display errors
+      debug:
+        msg: "Failed to fetch configuration from {{ inventory_hostname }}: {{ config_output.stderr | default('Unknown error') }}"
+      when: config_output is defined and (config_output.stdout is not defined or config_output.failed | default(false))
+      
+    - name: Create output directory
+      delegate_to: localhost
+      file:
+        path: "/var/lib/awx/projects/test_output"
+        state: directory
+      run_once: true
+      
+    - name: Save configuration output when successful
+      delegate_to: localhost
+      copy:
+        content: "{{ config_output.stdout }}"
+        dest: "/var/lib/awx/projects/test_output/{{ inventory_hostname }}_config.txt"
+      when: config_output is defined and config_output.stdout is defined
