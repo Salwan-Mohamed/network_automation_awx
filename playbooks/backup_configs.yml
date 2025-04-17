@@ -1,0 +1,45 @@
+---
+# Playbook to backup configurations from Aruba switches
+- name: Backup Aruba switch configurations
+  hosts: all
+  gather_facts: no
+  
+  vars:
+    backup_path: "/var/lib/awx/projects/backups"
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M') }}"
+  
+  tasks:
+    - name: Create backup directory if it doesn't exist
+      delegate_to: localhost
+      file:
+        path: "{{ backup_path }}"
+        state: directory
+      run_once: true
+      
+    - name: Backup running config
+      aruba_config:
+        backup: yes
+        backup_options:
+          filename: "{{ inventory_hostname }}_{{ timestamp }}.cfg"
+          dir_path: "{{ backup_path }}"
+      register: config_output
+      
+    - name: Display backup info
+      debug:
+        msg: "Configuration backed up to {{ config_output.backup_path }}"
+      when: config_output.changed
+      
+    - name: Create inventory-specific directories
+      delegate_to: localhost
+      file:
+        path: "{{ backup_path }}/{{ inventory_file | basename | splitext | first }}"
+        state: directory
+      run_once: true
+      
+    - name: Copy backups to inventory-specific folder
+      delegate_to: localhost
+      copy:
+        src: "{{ config_output.backup_path }}"
+        dest: "{{ backup_path }}/{{ inventory_file | basename | splitext | first }}/"
+        remote_src: yes
+      when: config_output.changed
