@@ -1,28 +1,54 @@
 ---
-# Playbook to configure network switches
-- name: Configure switches
-  hosts: switches
+# Playbook to configure Aruba switches
+- name: Configure Aruba switches
+  hosts: all
   gather_facts: no
   
   tasks:
-    - name: Configure hostname
-      ios_config:
+    - name: Configure hostname 
+      aruba_config:
         lines:
           - hostname {{ inventory_hostname }}
-      when: ansible_network_os == "ios"
+      when: ansible_network_os == "aruba"
       
-    - name: Configure VLANs
-      ios_vlans:
-        config:
-          - name: Management
-            vlan_id: 10
-          - name: Users
-            vlan_id: 20
-          - name: Servers
-            vlan_id: 30
-      when: ansible_network_os == "ios"
+    - name: Configure management VLAN
+      aruba_config:
+        lines:
+          - vlan 10
+          - name "Management"
+          - exit
+      when: ansible_network_os == "aruba"
+      
+    - name: Configure user VLAN
+      aruba_config:
+        lines:
+          - vlan 20
+          - name "Users"
+          - exit
+      when: ansible_network_os == "aruba"
+      
+    - name: Configure server VLAN
+      aruba_config:
+        lines:
+          - vlan 30
+          - name "Servers"
+          - exit
+      when: ansible_network_os == "aruba"
+      
+    - name: Configure NTP settings
+      aruba_config:
+        lines:
+          - timesync ntp
+          - ntp server 10.1.126.1
+      when: ansible_network_os == "aruba"
+      
+    - name: Configure syslog server
+      aruba_config:
+        lines:
+          - logging 10.1.126.5
+      when: ansible_network_os == "aruba"
       
     - name: Save configuration
-      ios_config:
+      aruba_config:
         save_when: modified
-      when: ansible_network_os == "ios"
+      when: ansible_network_os == "aruba"
