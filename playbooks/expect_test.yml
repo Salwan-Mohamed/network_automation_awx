@@ -1,0 +1,44 @@
+---
+# Test playbook using expect module to handle Aruba device interaction
+- name: Test Aruba Connectivity with Expect
+  hosts: all
+  gather_facts: no
+  
+  vars:
+    output_path: "/var/lib/awx/projects/test_output"
+  
+  tasks:
+    - name: Create output directory
+      delegate_to: localhost
+      file:
+        path: "{{ output_path }}"
+        state: directory
+      run_once: true
+    
+    - name: Get version information using expect
+      expect:
+        command: ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1,diffie-hellman-group-exchange-sha1 -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa {{ ansible_user }}@{{ ansible_host }}
+        responses:
+          "Password:": "{{ ansible_password }}"
+          ">": "terminal length 0\nshow version\nshow running-config\nexit\n"
+        timeout: 30
+      register: expect_output
+      ignore_errors: yes
+    
+    - name: Display connection results
+      debug:
+        msg: "Connection to {{ inventory_hostname }} completed with status {{ 'Success' if expect_output is defined and expect_output.stdout is defined else 'Failed' }}"
+    
+    - name: Save output when successful
+      delegate_to: localhost
+      copy:
+        content: "{{ expect_output.stdout | default('No output') }}"
+        dest: "{{ output_path }}/{{ inventory_hostname }}_output.txt"
+      when: expect_output is defined and expect_output.stdout is defined
+    
+    - name: Save error output when failed
+      delegate_to: localhost
+      copy:
+        content: "{{ expect_output.stderr | default('No error output') }}"
+        dest: "{{ output_path }}/{{ inventory_hostname }}_error.txt"
+      when: expect_output is defined and expect_output.stderr is defined
