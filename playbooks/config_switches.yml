@@ -1,0 +1,28 @@
+---
+# Playbook to configure network switches
+- name: Configure switches
+  hosts: switches
+  gather_facts: no
+  
+  tasks:
+    - name: Configure hostname
+      ios_config:
+        lines:
+          - hostname {{ inventory_hostname }}
+      when: ansible_network_os == "ios"
+      
+    - name: Configure VLANs
+      ios_vlans:
+        config:
+          - name: Management
+            vlan_id: 10
+          - name: Users
+            vlan_id: 20
+          - name: Servers
+            vlan_id: 30
+      when: ansible_network_os == "ios"
+      
+    - name: Save configuration
+      ios_config:
+        save_when: modified
+      when: ansible_network_os == "ios"
