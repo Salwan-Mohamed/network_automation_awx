@@ -1,0 +1,58 @@
+---
+# Playbook to configure Aruba Mobility Controller
+- name: Configure Aruba Mobility Controller
+  hosts: aruba_controller_master
+  gather_facts: no
+  
+  tasks:
+    - name: Verify controller connectivity
+      cli_command:
+        command: "show version"
+      register: version_output
+      
+    - name: Display controller version
+      debug:
+        var: version_output.stdout_lines
+        
+    - name: Configure controller hostname
+      cli_command:
+        command: "{{ item }}"
+      loop:
+        - "configure terminal"
+        - "hostname {{ inventory_hostname }}"
+        - "end"
+      ignore_errors: yes
+      
+    - name: Configure NTP settings
+      cli_command:
+        command: "{{ item }}"
+      loop:
+        - "configure terminal"
+        - "ntp server 10.1.126.1"
+        - "end"
+      ignore_errors: yes
+      
+    - name: Configure syslog server
+      cli_command:
+        command: "{{ item }}"
+      loop:
+        - "configure terminal"
+        - "logging 10.1.126.5"
+        - "end"
+      ignore_errors: yes
+      
+    - name: Save configuration
+      cli_command:
+        command: "write memory"
+      ignore_errors: yes
+      
+    - name: Gather WLAN information
+      cli_command:
+        command: "show wlan"
+      register: wlan_info
+      ignore_errors: yes
+      
+    - name: Display WLAN information
+      debug:
+        var: wlan_info.stdout_lines
+      when: wlan_info is defined and wlan_info.stdout_lines is defined
