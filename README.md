@@ -5,12 +5,17 @@ This repository contains configuration files for network automation using AWX an
 ## Directory Structure
 
 - `inventory/` - Contains inventory files defining network devices
-  - `switches.ini` - Inventory file for Aruba switches, organized by location groups
+  - `switches.ini` - Inventory file for Aruba switches using network_cli/ios connection
+  - `switches_ssh.ini` - Alternative inventory using basic SSH connection
+  - `switches_netconf.ini` - Alternative inventory using NETCONF connection
 - `playbooks/` - Contains Ansible playbooks
   - `config_switches.yml` - Playbook for configuring Aruba switches
   - `config_controller.yml` - Playbook for configuring Aruba Mobility Controller
   - `backup_configs.yml` - Playbook for backing up switch configurations
   - `gather_facts.yml` - Playbook for gathering facts from switches
+  - `test_show_running.yml` - Test playbook for displaying running configurations
+  - `test_controller_show_running.yml` - Test playbook specifically for the controller
+  - `test_raw_connection.yml` - Test playbook using raw SSH commands for compatibility
 - `templates/` - Jinja2 templates for generating reports
   - `facts_report.j2` - HTML template for switch facts report
 
@@ -23,71 +28,97 @@ The inventory is organized into several groups:
 - `aruba_switch__Dorms` - Access switches in Dorms
 - `aruba_controller_master` - Aruba controller
 
-## Device Types and Compatibility
+## Connection Methods
 
-This repository is configured for:
-- Aruba OS switches (using ansible_network_os=arubaoss)
-- Aruba Mobility Controllers (using ansible_network_os=aruba_aos_controller)
+This repository provides multiple connection methods for compatibility:
 
-## Playbooks
+1. **Network CLI with IOS** (switches.ini)
+   - Uses `ansible_connection=network_cli` with `ansible_network_os=ios`
+   - Works with many network devices even if specific OS modules aren't installed
+
+2. **Basic SSH** (switches_ssh.ini)
+   - Uses `ansible_connection=ssh`
+   - Most basic connection method, relies on raw commands
+
+3. **NETCONF** (switches_netconf.ini)
+   - Uses `ansible_connection=ansible.netcommon.netconf`
+   - For devices that support NETCONF API
+
+## Testing Playbooks
+
+Before attempting configuration, use the test playbooks to verify connectivity:
+
+### test_raw_connection.yml
+- Most compatible testing approach using raw SSH commands
+- Tries to fetch basic version and configuration information
+- Stores output for inspection
+
+### test_show_running.yml
+- Uses cli_command module to fetch running configuration
+- More structured approach than raw SSH
+
+### test_controller_show_running.yml
+- Specifically designed for Aruba Mobility Controller
+- Tries multiple command variations to find working syntax
+
+## Configuration Playbooks
+
+Once connectivity is confirmed, use these playbooks:
 
 ### config_switches.yml
-Configures basic settings on Aruba switches using direct CLI commands:
-- Hostname
-- VLANs (Management, Users, Servers)
-- NTP settings
-- Syslog server
-- Saves configuration when modified
+- Configures basic settings on Aruba switches using CLI commands
+- Includes hostname, VLANs, NTP, and syslog configuration
 
 ### config_controller.yml
-Specialized playbook for configuring Aruba Mobility Controllers:
-- Hostname configuration
-- NTP settings
-- Syslog configuration
-- WLAN information gathering
+- Specialized playbook for Aruba Mobility Controllers
+- Handles their unique command structure
 
 ### backup_configs.yml
-Backs up running configurations using CLI commands:
-- Creates timestamped backups
-- Organizes backups by inventory group
-- Provides detailed backup information
+- Creates backups of device configurations using CLI commands
+- Organizes backups by device and group
 
 ### gather_facts.yml
-Collects and reports device information via CLI commands:
-- System information
-- Version information
-- Interface details
-- VLAN configuration
-- Saves information in both raw and JSON formats
+- Collects system information, versions, interfaces, and VLANs
+- Creates both raw and structured outputs
 
 ## Usage with AWX
 
 1. Import this repository into AWX as a Project
-2. Create the following Job Templates:
-   - **Configure Switches** - Uses `config_switches.yml` with the switches inventory
-   - **Configure Controller** - Uses `config_controller.yml` with the controller inventory
-   - **Backup Configurations** - Uses `backup_configs.yml`
-   - **Gather Switch Facts** - Uses `gather_facts.yml`
-3. Create a Schedule for regular backups and fact gathering
-4. Create an Inventory in AWX, using this repository's inventory file
+2. Sync the project to get the latest playbooks
+3. Create separate inventories for each connection method if needed
+4. Start with test playbooks before attempting configuration
+5. Once connectivity is verified, proceed with configuration playbooks
 
-## Troubleshooting
+## Troubleshooting Connection Issues
 
-If you encounter issues:
-- Verify network connectivity to devices
-- Ensure proper credentials in inventory or AWX credentials
-- Check that switches are running compatible Aruba OS versions
-- Verify proper terminal type settings
-- Console output will provide specific error messages for troubleshooting
+If you encounter connection problems:
+
+1. **"network os arubaoss is not supported"**
+   - Use the `switches.ini` inventory which uses the more common `ios` network OS
+   - Or try the `switches_ssh.ini` inventory which uses basic SSH
+
+2. **SSH connection failures**
+   - Verify IP addresses are correct
+   - Confirm credentials are accurate
+   - Check that SSH is enabled on the devices
+   - Test network connectivity from AWX server to switches
+
+3. **Command syntax errors**
+   - Aruba command syntax can vary by model and OS version
+   - The test playbooks can help identify the correct syntax
+   - Review the output logs for specific error messages
+
+4. **Permission issues**
+   - Ensure the user has sufficient privileges on the devices
+   - Try enabling privileged mode explicitly with `ansible_become=yes`
 
 ## Requirements
 
 - AWX or Ansible Tower
-- Ansible 2.9+ with Aruba modules
-- Network access to all devices in inventory
-- Credentials with administrative privileges
+- SSH access to network devices
+- Valid credentials with appropriate permissions
 
 ## Security Notes
 
-- The inventory file contains sensitive credential information. In a production environment, use AWX Credential management instead of storing credentials in the inventory file.
+- The inventory files contain sensitive credential information. In a production environment, use AWX Credential management instead of storing credentials in the inventory file.
 - Consider using SSH keys or vault-encrypted passwords for improved security.
