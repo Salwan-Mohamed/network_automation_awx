@@ -9,6 +9,7 @@ This repository contains configuration files for network automation using AWX an
   - `switches_ssh.ini` - Alternative inventory using basic SSH connection
   - `switches_netconf.ini` - Alternative inventory using NETCONF connection
   - `switches_legacy_ssh.ini` - Inventory with legacy SSH key exchange algorithm support
+  - `switches_full_compatibility.ini` - **RECOMMENDED** - Inventory with complete SSH compatibility options
 - `playbooks/` - Contains Ansible playbooks
   - `config_switches.yml` - Playbook for configuring Aruba switches
   - `config_controller.yml` - Playbook for configuring Aruba Mobility Controller
@@ -34,19 +35,25 @@ The inventory is organized into several groups:
 
 This repository provides multiple connection methods for compatibility:
 
-1. **Network CLI with IOS** (switches.ini)
+1. **RECOMMENDED: Full SSH Compatibility** (switches_full_compatibility.ini)
+   - Complete set of SSH compatibility options for older Aruba devices
+   - Includes both key exchange algorithm and host key algorithm settings
+   - Based on working parameters from Ansible core setup
+   - Complete command: `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1,diffie-hellman-group-exchange-sha1 -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa`
+
+2. **Network CLI with IOS** (switches.ini)
    - Uses `ansible_connection=network_cli` with `ansible_network_os=ios`
    - Works with many network devices even if specific OS modules aren't installed
 
-2. **Basic SSH** (switches_ssh.ini)
+3. **Basic SSH** (switches_ssh.ini)
    - Uses `ansible_connection=ssh`
    - Most basic connection method, relies on raw commands
 
-3. **NETCONF** (switches_netconf.ini)
+4. **NETCONF** (switches_netconf.ini)
    - Uses `ansible_connection=ansible.netcommon.netconf`
    - For devices that support NETCONF API
 
-4. **Legacy SSH** (switches_legacy_ssh.ini)
+5. **Legacy SSH Key Exchange** (switches_legacy_ssh.ini)
    - Specifically configured for older Aruba devices with legacy SSH key exchange algorithms
    - Adds `-o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1,diffie-hellman-group-exchange-sha1` to SSH options
 
@@ -96,7 +103,7 @@ Once connectivity is confirmed, use these playbooks:
 
 1. Import this repository into AWX as a Project
 2. Sync the project to get the latest playbooks
-3. Create separate inventories for each connection method if needed
+3. Create an inventory in AWX using the `switches_full_compatibility.ini` file (recommended)
 4. Start with test playbooks before attempting configuration
 5. Once connectivity is verified, proceed with configuration playbooks
 
@@ -113,31 +120,37 @@ If you encounter connection problems:
    - Use the `switches_legacy_ssh.ini` inventory which specifically enables legacy key exchange algorithms
    - Use with the `test_legacy_ssh.yml` playbook for best results
 
-3. **SSH connection failures**
+3. **SSH Host Key Algorithm Errors**
+   - Errors like: `no matching host key type found. Their offer: ssh-rsa`
+   - Use the `switches_full_compatibility.ini` inventory which enables the ssh-rsa host key algorithm
+   - This inventory includes ALL needed SSH compatibility options
+
+4. **Complete SSH Compatibility Solution**
+   - The `switches_full_compatibility.ini` inventory includes ALL required SSH compatibility options
+   - It matches the working parameters from your Ansible core setup
+   - This is the RECOMMENDED inventory file to use
+
+5. **SSH connection failures**
    - Verify IP addresses are correct
    - Confirm credentials are accurate
    - Check that SSH is enabled on the devices
    - Test network connectivity from AWX server to switches
-   - For older devices, you may need to adjust the `ansible_ssh_common_args` to include compatible encryption options
 
-4. **Command syntax errors**
+6. **Command syntax errors**
    - Aruba command syntax can vary by model and OS version
    - The test playbooks can help identify the correct syntax
    - Review the output logs for specific error messages
 
-5. **Permission issues**
-   - Ensure the user has sufficient privileges on the devices
-   - Try enabling privileged mode explicitly with `ansible_become=yes`
-
 ## SSH Compatibility Notes
 
-Older Aruba switches often use legacy SSH implementations with limited cipher and key exchange algorithm support. Common issues include:
+Older Aruba switches often use legacy SSH implementations with limited algorithm support. Common issues include:
 
 1. **Key Exchange (KEX) Algorithms**: Older devices might only support `diffie-hellman-group14-sha1` or `diffie-hellman-group1-sha1`
-2. **Cipher Algorithms**: May only support older ciphers like `aes128-cbc`, `3des-cbc`, etc.
-3. **HMAC Algorithms**: May require older HMAC algorithms
+2. **Host Key Algorithms**: May only offer `ssh-rsa` which is considered legacy/insecure by modern SSH clients
+3. **Public Key Algorithms**: May require `ssh-rsa` to be explicitly enabled
+4. **Cipher Algorithms**: May only support older ciphers like `aes128-cbc`, `3des-cbc`, etc.
 
-The `switches_legacy_ssh.ini` inventory is configured to handle these compatibility issues.
+The `switches_full_compatibility.ini` inventory includes settings to handle all of these issues.
 
 ## Requirements
 
