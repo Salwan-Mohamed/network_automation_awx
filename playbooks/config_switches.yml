@@ -1,54 +1,65 @@
 ---
-# Playbook to configure Aruba switches
+# Playbook to configure Aruba switches using CLI commands
 - name: Configure Aruba switches
   hosts: all
   gather_facts: no
   
   tasks:
     - name: Configure hostname 
-      aruba_config:
-        lines:
-          - hostname {{ inventory_hostname }}
-      when: ansible_network_os == "aruba"
+      cli_command:
+        command: "hostname {{ inventory_hostname }}"
+      ignore_errors: yes
       
     - name: Configure management VLAN
-      aruba_config:
-        lines:
-          - vlan 10
-          - name "Management"
-          - exit
-      when: ansible_network_os == "aruba"
+      cli_command:
+        command: "{{ item }}"
+      loop:
+        - "config"
+        - "vlan 10"
+        - "name Management"
+        - "exit"
+      ignore_errors: yes
       
     - name: Configure user VLAN
-      aruba_config:
-        lines:
-          - vlan 20
-          - name "Users"
-          - exit
-      when: ansible_network_os == "aruba"
+      cli_command:
+        command: "{{ item }}"
+      loop:
+        - "config"
+        - "vlan 20"
+        - "name Users"
+        - "exit"
+      ignore_errors: yes
       
     - name: Configure server VLAN
-      aruba_config:
-        lines:
-          - vlan 30
-          - name "Servers"
-          - exit
-      when: ansible_network_os == "aruba"
+      cli_command:
+        command: "{{ item }}"
+      loop:
+        - "config"
+        - "vlan 30"
+        - "name Servers"
+        - "exit"
+      ignore_errors: yes
       
     - name: Configure NTP settings
-      aruba_config:
-        lines:
-          - timesync ntp
-          - ntp server 10.1.126.1
-      when: ansible_network_os == "aruba"
+      cli_command:
+        command: "{{ item }}"
+      loop:
+        - "config"
+        - "timesync ntp"
+        - "ntp server 10.1.126.1"
+        - "exit"
+      ignore_errors: yes
       
     - name: Configure syslog server
-      aruba_config:
-        lines:
-          - logging 10.1.126.5
-      when: ansible_network_os == "aruba"
+      cli_command:
+        command: "{{ item }}"
+      loop:
+        - "config"
+        - "logging 10.1.126.5"
+        - "exit"
+      ignore_errors: yes
       
     - name: Save configuration
-      aruba_config:
-        save_when: modified
-      when: ansible_network_os == "aruba"
+      cli_command:
+        command: "write memory"
+      ignore_errors: yes
