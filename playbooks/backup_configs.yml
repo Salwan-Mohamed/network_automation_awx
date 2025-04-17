@@ -1,5 +1,5 @@
 ---
-# Playbook to backup configurations from Aruba switches
+# Playbook to backup configurations from Aruba switches using raw CLI commands
 - name: Backup Aruba switch configurations
   hosts: all
   gather_facts: no
@@ -16,30 +16,40 @@
         state: directory
       run_once: true
       
-    - name: Backup running config
-      aruba_config:
-        backup: yes
-        backup_options:
-          filename: "{{ inventory_hostname }}_{{ timestamp }}.cfg"
-          dir_path: "{{ backup_path }}"
+    - name: Create device-specific backup directory
+      delegate_to: localhost
+      file:
+        path: "{{ backup_path }}/{{ inventory_hostname }}"
+        state: directory
+        
+    - name: Fetch running configuration
+      cli_command:
+        command: "show running-config"
       register: config_output
+      ignore_errors: yes
       
-    - name: Display backup info
-      debug:
-        msg: "Configuration backed up to {{ config_output.backup_path }}"
-      when: config_output.changed
+    - name: Save configuration to file
+      delegate_to: localhost
+      copy:
+        content: "{{ config_output.stdout | default('Error retrieving configuration') }}"
+        dest: "{{ backup_path }}/{{ inventory_hostname }}/{{ inventory_hostname }}_{{ timestamp }}.cfg"
+      when: config_output is defined
       
     - name: Create inventory-specific directories
       delegate_to: localhost
       file:
-        path: "{{ backup_path }}/{{ inventory_file | basename | splitext | first }}"
+        path: "{{ backup_path }}/groups/{{ group_names[0] | default('ungrouped') }}"
         state: directory
-      run_once: true
+      run_once: false
+      when: group_names | length > 0
       
     - name: Copy backups to inventory-specific folder
       delegate_to: localhost
       copy:
-        src: "{{ config_output.backup_path }}"
-        dest: "{{ backup_path }}/{{ inventory_file | basename | splitext | first }}/"
+        src: "{{ backup_path }}/{{ inventory_hostname }}/{{ inventory_hostname }}_{{ timestamp }}.cfg"
+        dest: "{{ backup_path }}/groups/{{ group_names[0] | default('ungrouped') }}/"
         remote_src: yes
-      when: config_output.changed
+      when: 
+        - config_output is defined
+        - group_names | length > 0
+      ignore_errors: yes
