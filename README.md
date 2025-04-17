@@ -10,6 +10,7 @@ This repository contains configuration files for network automation using AWX an
   - `switches_netconf.ini` - Alternative inventory using NETCONF connection
   - `switches_legacy_ssh.ini` - Inventory with legacy SSH key exchange algorithm support
   - `switches_full_compatibility.ini` - **RECOMMENDED** - Inventory with complete SSH compatibility options
+  - `test_standalone.ini` - Minimal test inventory for troubleshooting
 - `playbooks/` - Contains Ansible playbooks
   - `config_switches.yml` - Playbook for configuring Aruba switches
   - `config_controller.yml` - Playbook for configuring Aruba Mobility Controller
@@ -19,6 +20,8 @@ This repository contains configuration files for network automation using AWX an
   - `test_controller_show_running.yml` - Test playbook specifically for the controller
   - `test_raw_connection.yml` - Test playbook using raw SSH commands for compatibility
   - `test_legacy_ssh.yml` - Test playbook for devices with legacy SSH algorithms
+  - `basic_ping_test.yml` - **FIRST TEST** - Simple ping test to verify basic connectivity
+  - `expect_test.yml` - Interactive SSH session testing using expect module
 - `templates/` - Jinja2 templates for generating reports
   - `facts_report.j2` - HTML template for switch facts report
 
@@ -31,6 +34,28 @@ The inventory is organized into several groups:
 - `aruba_switch__Dorms` - Access switches in Dorms
 - `aruba_controller_master` - Aruba controller
 
+## Troubleshooting Approach
+
+We recommend the following step-by-step approach to test connectivity:
+
+1. **Start with Basic Ping Test**:
+   - Use `basic_ping_test.yml` with any inventory file
+   - This confirms basic network connectivity to the devices
+   - No SSH connection is attempted at this stage
+
+2. **Test SSH Connectivity**:
+   - Use `expect_test.yml` with `switches_full_compatibility.ini`
+   - The expect module allows for interactive SSH sessions
+   - This bypasses Ansible network modules entirely
+
+3. **Test with Minimal Inventory**:
+   - Use `test_standalone.ini` which only includes one device
+   - Test with the `expect_test.yml` playbook
+   - This reduces the number of variables to troubleshoot
+
+4. **Once Connectivity is Working**:
+   - Move on to more advanced playbooks like `config_switches.yml`
+
 ## Connection Methods
 
 This repository provides multiple connection methods for compatibility:
@@ -41,35 +66,48 @@ This repository provides multiple connection methods for compatibility:
    - Based on working parameters from Ansible core setup
    - Complete command: `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1,diffie-hellman-group-exchange-sha1 -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa`
 
-2. **Network CLI with IOS** (switches.ini)
+2. **Expect-based Connection** (expect_test.yml)
+   - Uses the expect module to handle interactive SSH sessions
+   - Doesn't rely on Ansible's network modules
+   - Can work even when network modules fail
+
+3. **Network CLI with IOS** (switches.ini)
    - Uses `ansible_connection=network_cli` with `ansible_network_os=ios`
    - Works with many network devices even if specific OS modules aren't installed
 
-3. **Basic SSH** (switches_ssh.ini)
+4. **Basic SSH** (switches_ssh.ini)
    - Uses `ansible_connection=ssh`
    - Most basic connection method, relies on raw commands
 
-4. **NETCONF** (switches_netconf.ini)
+5. **NETCONF** (switches_netconf.ini)
    - Uses `ansible_connection=ansible.netcommon.netconf`
    - For devices that support NETCONF API
 
-5. **Legacy SSH Key Exchange** (switches_legacy_ssh.ini)
+6. **Legacy SSH Key Exchange** (switches_legacy_ssh.ini)
    - Specifically configured for older Aruba devices with legacy SSH key exchange algorithms
    - Adds `-o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1,diffie-hellman-group-exchange-sha1` to SSH options
 
 ## Testing Playbooks
 
-Before attempting configuration, use the test playbooks to verify connectivity:
+Start troubleshooting with these playbooks, in this order:
+
+### basic_ping_test.yml
+- Simplest test that only verifies network connectivity
+- No SSH connection is attempted
+- Good first step to confirm devices are reachable
+
+### expect_test.yml
+- Uses expect module to handle interactive SSH sessions
+- Bypasses Ansible network modules entirely
+- Useful when regular Ansible network modules aren't working
 
 ### test_legacy_ssh.yml
-- Specifically designed for older Aruba devices with legacy SSH key exchange algorithms
-- Includes detailed debugging options and multiple command attempts
-- Best option for initial testing with older Aruba firmware
+- Specifically designed for older Aruba devices with legacy SSH algorithms
+- Includes detailed debugging options
 
 ### test_raw_connection.yml
 - Compatible testing approach using raw SSH commands
 - Tries to fetch basic version and configuration information
-- Stores output for inspection
 
 ### test_show_running.yml
 - Uses cli_command module to fetch running configuration
@@ -104,42 +142,32 @@ Once connectivity is confirmed, use these playbooks:
 1. Import this repository into AWX as a Project
 2. Sync the project to get the latest playbooks
 3. Create an inventory in AWX using the `switches_full_compatibility.ini` file (recommended)
-4. Start with test playbooks before attempting configuration
-5. Once connectivity is verified, proceed with configuration playbooks
+4. Start with `basic_ping_test.yml` to verify connectivity
+5. Move to `expect_test.yml` to test SSH interaction
+6. Once basic connectivity is verified, proceed with configuration playbooks
 
 ## Troubleshooting Connection Issues
 
-If you encounter connection problems:
+The errors you're encountering can be categorized and resolved:
 
 1. **"network os arubaoss is not supported"**
-   - Use the `switches.ini` inventory which uses the more common `ios` network OS
-   - Or try the `switches_ssh.ini` inventory which uses basic SSH
+   - Solution: Use `switches_full_compatibility.ini` which uses the generic `ios` network OS
 
 2. **SSH Key Exchange Algorithm Errors**
    - Errors like: `kex error : no match for method kex algos: server [diffie-hellman-group14-sha1]` 
-   - Use the `switches_legacy_ssh.ini` inventory which specifically enables legacy key exchange algorithms
-   - Use with the `test_legacy_ssh.yml` playbook for best results
+   - Solution: Use inventories with KexAlgorithms configuration
 
 3. **SSH Host Key Algorithm Errors**
    - Errors like: `no matching host key type found. Their offer: ssh-rsa`
-   - Use the `switches_full_compatibility.ini` inventory which enables the ssh-rsa host key algorithm
-   - This inventory includes ALL needed SSH compatibility options
+   - Solution: Use inventories with HostKeyAlgorithms configuration
 
-4. **Complete SSH Compatibility Solution**
+4. **Command Not Found Errors**
+   - Errors like: `terminal: command not found` or `show: command not found`
+   - Solution: Use `expect_test.yml` which handles the interactive console properly
+
+5. **Complete SSH Compatibility Solution**
    - The `switches_full_compatibility.ini` inventory includes ALL required SSH compatibility options
-   - It matches the working parameters from your Ansible core setup
-   - This is the RECOMMENDED inventory file to use
-
-5. **SSH connection failures**
-   - Verify IP addresses are correct
-   - Confirm credentials are accurate
-   - Check that SSH is enabled on the devices
-   - Test network connectivity from AWX server to switches
-
-6. **Command syntax errors**
-   - Aruba command syntax can vary by model and OS version
-   - The test playbooks can help identify the correct syntax
-   - Review the output logs for specific error messages
+   - Use this with `expect_test.yml` for the most reliable approach
 
 ## SSH Compatibility Notes
 
@@ -157,6 +185,7 @@ The `switches_full_compatibility.ini` inventory includes settings to handle all 
 - AWX or Ansible Tower
 - SSH access to network devices
 - Valid credentials with appropriate permissions
+- Python `pexpect` module installed on AWX for expect-based tests
 
 ## Security Notes
 
