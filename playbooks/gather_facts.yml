@@ -1,5 +1,5 @@
 ---
-# Playbook to gather facts from Aruba switches
+# Playbook to gather facts from Aruba switches using CLI commands
 - name: Gather facts from Aruba switches
   hosts: all
   gather_facts: no
@@ -16,44 +16,98 @@
         state: directory
       run_once: true
     
-    - name: Gather facts from switches
-      aruba_facts:
-        gather_subset:
-          - all
-      register: switch_facts
+    - name: Gather hardware information
+      cli_command:
+        command: "show system"
+      register: system_info
+      ignore_errors: yes
+      
+    - name: Gather software version information
+      cli_command:
+        command: "show version"
+      register: version_info
+      ignore_errors: yes
+      
+    - name: Gather interface information
+      cli_command:
+        command: "show interface"
+      register: interface_info
+      ignore_errors: yes
+      
+    - name: Gather VLAN information
+      cli_command:
+        command: "show vlan"
+      register: vlan_info
+      ignore_errors: yes
     
-    - name: Display switch model
+    - name: Display captured information
       debug:
-        msg: "Switch {{ inventory_hostname }} is a {{ switch_facts.ansible_facts.ansible_net_model }}"
+        msg: 
+          - "Hostname: {{ inventory_hostname }}"
+          - "System information available: {{ system_info is defined and system_info.stdout is defined }}"
+          - "Version information available: {{ version_info is defined and version_info.stdout is defined }}"
     
-    - name: Display firmware version
-      debug:
-        msg: "Switch {{ inventory_hostname }} is running firmware {{ switch_facts.ansible_facts.ansible_net_version }}"
-    
-    - name: Save facts to JSON file
+    - name: Create device fact directory
+      delegate_to: localhost
+      file:
+        path: "{{ output_path }}/{{ inventory_hostname }}"
+        state: directory
+      
+    - name: Save system info to file
       delegate_to: localhost
       copy:
-        content: "{{ switch_facts | to_nice_json }}"
-        dest: "{{ output_path }}/{{ inventory_hostname }}_facts_{{ timestamp }}.json"
-    
+        content: "{{ system_info.stdout | default('Error retrieving system info') }}"
+        dest: "{{ output_path }}/{{ inventory_hostname }}/system_info_{{ timestamp }}.txt"
+      when: system_info is defined and system_info.stdout is defined
+      
+    - name: Save version info to file
+      delegate_to: localhost
+      copy:
+        content: "{{ version_info.stdout | default('Error retrieving version info') }}"
+        dest: "{{ output_path }}/{{ inventory_hostname }}/version_info_{{ timestamp }}.txt"
+      when: version_info is defined and version_info.stdout is defined
+      
+    - name: Save interface info to file
+      delegate_to: localhost
+      copy:
+        content: "{{ interface_info.stdout | default('Error retrieving interface info') }}"
+        dest: "{{ output_path }}/{{ inventory_hostname }}/interface_info_{{ timestamp }}.txt"
+      when: interface_info is defined and interface_info.stdout is defined
+      
+    - name: Save VLAN info to file
+      delegate_to: localhost
+      copy:
+        content: "{{ vlan_info.stdout | default('Error retrieving VLAN info') }}"
+        dest: "{{ output_path }}/{{ inventory_hostname }}/vlan_info_{{ timestamp }}.txt"
+      when: vlan_info is defined and vlan_info.stdout is defined
+      
+    - name: Create combined facts file with JSON structure
+      delegate_to: localhost
+      copy:
+        content: |
+          {
+            "inventory_hostname": "{{ inventory_hostname }}",
+            "ip_address": "{{ hostvars[inventory_hostname].ansible_host }}",
+            "timestamp": "{{ timestamp }}",
+            "system_info_available": {{ system_info is defined and system_info.stdout is defined }},
+            "version_info_available": {{ version_info is defined and version_info.stdout is defined }},
+            "interface_info_available": {{ interface_info is defined and interface_info.stdout is defined }},
+            "vlan_info_available": {{ vlan_info is defined and vlan_info.stdout is defined }}
+          }
+        dest: "{{ output_path }}/{{ inventory_hostname }}/facts_summary_{{ timestamp }}.json"
+        
     - name: Create inventory group directories
       delegate_to: localhost
       file:
-        path: "{{ output_path }}/{{ group_names[0] }}"
+        path: "{{ output_path }}/groups/{{ group_names[0] | default('ungrouped') }}"
         state: directory
       when: group_names | length > 0
     
     - name: Copy facts to inventory group folder
       delegate_to: localhost
       copy:
-        src: "{{ output_path }}/{{ inventory_hostname }}_facts_{{ timestamp }}.json"
-        dest: "{{ output_path }}/{{ group_names[0] }}/"
+        src: "{{ output_path }}/{{ inventory_hostname }}/facts_summary_{{ timestamp }}.json"
+        dest: "{{ output_path }}/groups/{{ group_names[0] | default('ungrouped') }}/"
         remote_src: yes
       when: group_names | length > 0
-    
-    - name: Generate HTML report
-      delegate_to: localhost
-      template:
-        src: templates/facts_report.j2
-        dest: "{{ output_path }}/facts_report_{{ timestamp }}.html"
-      run_once: true
+      ignore_errors: yes
