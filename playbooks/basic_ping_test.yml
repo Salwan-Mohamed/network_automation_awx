@@ -1,0 +1,27 @@
+---
+# Simple ping test playbook to verify basic connectivity
+- name: Ping Test Aruba Devices
+  hosts: all
+  connection: local
+  gather_facts: no
+  
+  tasks:
+    - name: Ping devices
+      ping:
+      register: ping_result
+      ignore_errors: yes
+      
+    - name: Display ping results
+      debug:
+        msg: "Ping to {{ inventory_hostname }} ({{ ansible_host }}) was {{ 'successful' if ping_result is succeeded else 'unsuccessful' }}"
+        
+    - name: Test network connectivity
+      command: ping -c 3 {{ ansible_host }}
+      delegate_to: localhost
+      register: ping_cmd
+      ignore_errors: yes
+      
+    - name: Display network connectivity results
+      debug:
+        msg: "Network connectivity to {{ ansible_host }} is {{ 'available' if ping_cmd.rc == 0 else 'unavailable' }}"
+        var: ping_cmd.stdout_lines
