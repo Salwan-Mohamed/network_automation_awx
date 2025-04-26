@@ -1,0 +1,5 @@
+pexpect>=4.8.0
+netaddr>=0.8.0
+ansible-lint>=6.0.0
+jmespath>=1.0.1
+ansible-pylibssh>=1.0.0
