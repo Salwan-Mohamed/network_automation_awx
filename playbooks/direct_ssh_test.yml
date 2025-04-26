@@ -1,0 +1,55 @@
+---
+# Direct SSH command execution test
+- name: Test Direct SSH Commands
+  hosts: all
+  connection: local
+  gather_facts: no
+  
+  vars:
+    output_path: "/var/lib/awx/projects/test_output"
+    ssh_options: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1,diffie-hellman-group-exchange-sha1 -o HostKeyAlgorithms=+ssh-rsa -o PubkeyAcceptedAlgorithms=+ssh-rsa -v"
+  
+  tasks:
+    - name: Create output directory
+      file:
+        path: "{{ output_path }}"
+        state: directory
+      run_once: true
+    
+    - name: Direct SSH connection test
+      command: >
+        ssh {{ ssh_options }} -t {{ ansible_user }}@{{ ansible_host }} "exit"
+      register: ssh_result
+      ignore_errors: yes
+      no_log: false
+      
+    - name: Display SSH results
+      debug:
+        msg: 
+          - "Connection to {{ inventory_hostname }} ({{ ansible_host }}) {{ 'succeeded' if ssh_result.rc == 0 else 'failed' }}"
+          - "Return code: {{ ssh_result.rc }}"
+        
+    - name: Save SSH verbose output
+      copy:
+        content: "{{ ssh_result.stderr | default('No output') }}"
+        dest: "{{ output_path }}/{{ inventory_hostname }}_ssh_debug.txt"
+      when: ssh_result is defined and ssh_result.stderr is defined
+    
+    - name: Attempt a sshpass connection
+      shell: >
+        sshpass -p "{{ ansible_password }}" ssh {{ ssh_options }} -t {{ ansible_user }}@{{ ansible_host }} "exit"
+      register: sshpass_result
+      ignore_errors: yes
+      no_log: false
+      
+    - name: Display sshpass results
+      debug:
+        msg: 
+          - "sshpass connection to {{ inventory_hostname }} ({{ ansible_host }}) {{ 'succeeded' if sshpass_result.rc == 0 else 'failed' }}"
+          - "Return code: {{ sshpass_result.rc }}"
+        
+    - name: Save sshpass output
+      copy:
+        content: "{{ sshpass_result.stderr | default('No output') }}{{ sshpass_result.stdout | default('') }}"
+        dest: "{{ output_path }}/{{ inventory_hostname }}_sshpass_debug.txt"
+      when: sshpass_result is defined and (sshpass_result.stderr is defined or sshpass_result.stdout is defined)
