@@ -4,7 +4,7 @@
   gather_facts: no
   tasks:
     - name: Run 'show version' on Aruba switch
-      arubanetworks.arubaos_switch.arubaoss_command:
+      arubaoss_command:
         commands:
           - show version
       register: output
