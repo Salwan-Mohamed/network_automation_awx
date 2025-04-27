@@ -1,13 +1,13 @@
 ---
-# Simple test playbook to just fetch running configuration
+# Simple test playbook to just fetch running configuration for Aruba devices
 - name: Test Show Running Configuration
   hosts: all
   gather_facts: no
   
   tasks:
-    - name: Fetch running configuration
-      cli_command:
-        command: "show running-config"
+    - name: Fetch running configuration from Aruba devices
+      arubanetworks.aos_switch.arubaoss_command:
+        commands: "show running-config"
       register: config_output
       ignore_errors: yes
       
@@ -15,7 +15,7 @@
       debug:
         msg: "Successfully fetched configuration from {{ inventory_hostname }}"
       when: config_output is defined and config_output.stdout is defined
-
+      
     - name: Display errors
       debug:
         msg: "Failed to fetch configuration from {{ inventory_hostname }}: {{ config_output.stderr | default('Unknown error') }}"
@@ -31,6 +31,6 @@
     - name: Save configuration output when successful
       delegate_to: localhost
       copy:
-        content: "{{ config_output.stdout }}"
+        content: "{{ config_output.stdout[0] }}"
         dest: "/var/lib/awx/projects/test_output/{{ inventory_hostname }}_config.txt"
       when: config_output is defined and config_output.stdout is defined
