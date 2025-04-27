@@ -1,13 +1,14 @@
 ---
 - name: Test Aruba Switch Connectivity
-  hosts: distswitch_N
+  hosts: all
   gather_facts: no
   tasks:
-    - name: Run 'show version' on Aruba switch
-      arubaoss_command:
+    - name: Run 'show version' on the Aruba switch
+      aos_switch_command:
         commands:
           - show version
-      register: output
+      register: version_output
 
-    - debug:
-        var: output.stdout
+    - name: Display output
+      debug:
+        var: version_output.stdout
