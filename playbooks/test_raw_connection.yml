@@ -1,51 +1,15 @@
 ---
-# Simple test playbook using raw SSH connection for maximum compatibility
-- name: Test Basic SSH Connection to Aruba Devices
+- name: Test Aruba Switch Connectivity
   hosts: all
   gather_facts: no
-  
-  vars:
-    output_path: "/var/lib/awx/projects/test_output"
-  
+  connection: network_cli
+
   tasks:
-    - name: Create output directory
-      delegate_to: localhost
-      file:
-        path: "{{ output_path }}"
-        state: directory
-      run_once: true
-    
-    - name: Test SSH connection with simple commands
-      raw: "terminal length 0 && show version"
+    - name: Run 'show version' on the Aruba device
+      ansible.netcommon.cli_command:
+        command: "show version"
       register: version_output
-      ignore_errors: yes
-      
-    - name: Display successful connections
+
+    - name: Display device output
       debug:
-        msg: "Successfully connected to {{ inventory_hostname }}"
-      when: version_output is defined and version_output.stdout is defined
-        
-    - name: Save version output when successful
-      delegate_to: localhost
-      copy:
-        content: "{{ version_output.stdout }}"
-        dest: "{{ output_path }}/{{ inventory_hostname }}_version.txt"
-      when: version_output is defined and version_output.stdout is defined
-      
-    - name: Try to fetch running configuration
-      raw: "show running-config"
-      register: config_output
-      ignore_errors: yes
-      when: version_output is defined and version_output.stdout is defined
-      
-    - name: Save configuration output when successful
-      delegate_to: localhost
-      copy:
-        content: "{{ config_output.stdout }}"
-        dest: "{{ output_path }}/{{ inventory_hostname }}_config.txt"
-      when: config_output is defined and config_output.stdout is defined
-      
-    - name: Display errors for failed connections
-      debug:
-        msg: "Failed to connect to {{ inventory_hostname }}: {{ version_output.stderr | default('Unknown error') }}"
-      when: version_output is defined and (version_output.stdout is not defined or version_output.stderr is defined)
+        var: version_output.stdout_lines
