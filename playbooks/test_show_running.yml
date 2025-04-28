@@ -1,14 +1,14 @@
 ---
-- name: Test Aruba Switch Connectivity
-  hosts: all
+- name: Execute Aruba Commands
+  hosts: aruba_N1
   gather_facts: no
   tasks:
-    - name: Run 'show version' on Aruba switch
-      arubanetworks.arubaoss.arubaoss_command:
+    - name: Run show running-config
+      aruba_command:
         commands:
-          - show version
-      register: output
+          - show running-config
+      register: config_output
 
-    - name: Display output
+    - name: Display running configuration
       debug:
-        var: output
+        var: config_output.stdout_lines
