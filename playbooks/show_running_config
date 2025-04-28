@@ -1,0 +1,9 @@
+---
+- name: Execute Aruba Commands
+  hosts: aruba_n17
+  gather_facts: no
+  tasks:
+    - name: Run show running-config
+      aruba_command:
+        commands:
+          - show running-config
