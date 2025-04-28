@@ -1,55 +1,26 @@
 ---
-# Playbook to backup configurations from Aruba switches using raw CLI commands
-- name: Backup Aruba switch configurations
+- name: Backup Aruba Switch Configurations and show as Artifact
   hosts: all
   gather_facts: no
-  
-  vars:
-    backup_path: "/var/lib/awx/projects/backups"
-    timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M') }}"
-  
+  connection: network_cli
+
   tasks:
-    - name: Create backup directory if it doesn't exist
+    - name: Run show running-config on Aruba Switch
+      community.network.aruba_command:
+        commands:
+          - show running-config
+      register: running_config
+
+    - name: Create Artifact directory (on Controller)
       delegate_to: localhost
-      file:
-        path: "{{ backup_path }}"
-        state: directory
       run_once: true
-      
-    - name: Create device-specific backup directory
-      delegate_to: localhost
       file:
-        path: "{{ backup_path }}/{{ inventory_hostname }}"
+        path: "/runner/artifacts/backup_configs"
         state: directory
-        
-    - name: Fetch running configuration
-      cli_command:
-        command: "show running-config"
-      register: config_output
-      ignore_errors: yes
-      
-    - name: Save configuration to file
-      delegate_to: localhost
+        mode: '0755'
+
+    - name: Save running-config to Artifact
       copy:
-        content: "{{ config_output.stdout | default('Error retrieving configuration') }}"
-        dest: "{{ backup_path }}/{{ inventory_hostname }}/{{ inventory_hostname }}_{{ timestamp }}.cfg"
-      when: config_output is defined
-      
-    - name: Create inventory-specific directories
+        content: "{{ running_config.stdout[0] }}"
+        dest: "/runner/artifacts/backup_configs/{{ inventory_hostname }}_running-config.txt"
       delegate_to: localhost
-      file:
-        path: "{{ backup_path }}/groups/{{ group_names[0] | default('ungrouped') }}"
-        state: directory
-      run_once: false
-      when: group_names | length > 0
-      
-    - name: Copy backups to inventory-specific folder
-      delegate_to: localhost
-      copy:
-        src: "{{ backup_path }}/{{ inventory_hostname }}/{{ inventory_hostname }}_{{ timestamp }}.cfg"
-        dest: "{{ backup_path }}/groups/{{ group_names[0] | default('ungrouped') }}/"
-        remote_src: yes
-      when: 
-        - config_output is defined
-        - group_names | length > 0
-      ignore_errors: yes
