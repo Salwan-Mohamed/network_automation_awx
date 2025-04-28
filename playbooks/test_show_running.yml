@@ -1,16 +1,14 @@
 ---
-- name: Test Aruba Switch Connectivity
+- name: Execute Aruba Commands
   hosts: aruba_n17
   gather_facts: no
   tasks:
-    - name: Test connection and get basic information
-      aruba_command:
+    - name: Run show running-config
+      community.network.aruba_command:
         commands:
-          - show version
-          - show system
-          - show vlan
-      register: test_output
+          - show running-config
+      register: config_output
 
-    - name: Display test results
+    - name: Display running configuration
       debug:
-        var: test_output.stdout_lines
+        var: config_output.stdout_lines
