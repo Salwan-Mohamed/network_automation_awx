@@ -13,6 +13,7 @@
 
     - name: Create Artifact directory (on Controller)
       delegate_to: localhost
+      become: false
       run_once: true
       file:
         path: "/runner/artifacts/backup_configs"
@@ -20,7 +21,8 @@
         mode: '0755'
 
     - name: Save running-config to Artifact
+      delegate_to: localhost
+      become: false
       copy:
         content: "{{ running_config.stdout[0] }}"
         dest: "/runner/artifacts/backup_configs/{{ inventory_hostname }}_running-config.txt"
-      delegate_to: localhost
