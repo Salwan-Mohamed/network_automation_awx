@@ -1,6 +1,6 @@
 ---
 - name: Execute Aruba Commands
-  hosts: all
+  hosts: aruba_controller
   gather_facts: no
   tasks:
     - name: Run show running-config
