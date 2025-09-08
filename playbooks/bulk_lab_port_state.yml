@@ -1,76 +1,113 @@
 ---
-# Play 1: Resolve lab → expand to a flat list of interfaces
-- name: Resolve lab → interface list
+# Play 1: Resolve switch → lab → interface list
+- name: Resolve switch & lab & interfaces
   hosts: localhost
   gather_facts: false
   vars_files:
-    - vars/lab_interfaces_mapping.yml
+    - vars/switch_mapping.yml            # switch_mapping: { switch: [rooms...] }
+    - vars/lab_name_mapping.yml          # lab_name_mapping: { room: lab_key }
+    - vars/lab_interfaces_mapping.yml    # lab_interfaces_mapping: { lab_key: [ports or ranges] }
 
   vars:
-    # Normalize lab key to support both lab_37 and lab-37
-    _lab_key_1: "{{ lab_name }}"
-    _lab_key_2: "{{ lab_name | replace('-', '_') }}"
-    _lab_key_3: "{{ lab_name | replace('_', '-') }}"
+    action: "{{ action | default(omit) }}"
 
   tasks:
-    - name: Pick the first matching key in lab_interfaces_mapping
+    # 1) Find switch by room (case-insensitive)
+    - name: Locate switch for given room
+      set_fact:
+        switch_name: "{{ item.key }}"
+      loop: "{{ switch_mapping | dict2items }}"
+      when:
+        - room is defined
+        - room | length > 0
+        - (room | lower) in (item.value | map('lower') | list)
+
+    - name: Fail if no switch matches the room
+      fail:
+        msg: "Room '{{ room }}' not found in vars/switch_mapping.yml"
+      when: switch_name is not defined
+
+    # 2) Build a lowercased lookup for lab_name_mapping to handle case & separators
+    - name: Build case-insensitive lab_name mapping
+      set_fact:
+        lab_name_mapping_ci: "{{ lab_name_mapping_ci | default({}) | combine({ (item.key | lower): item.value }) }}"
+      loop: "{{ lab_name_mapping | dict2items }}"
+
+    # Try direct, underscore↔hyphen, then case-insensitive
+    - name: Resolve lab name from room
+      set_fact:
+        resolved_lab_name: >-
+          {{
+            lab_name_mapping.get(room)
+            | default(lab_name_mapping.get(room | replace('-', '_')))
+            | default(lab_name_mapping.get(room | replace('_', '-')))
+            | default(lab_name_mapping_ci[room | lower] | default(omit))
+          }}
+
+    - name: Fail if lab name not found for this room
+      fail:
+        msg: "Room '{{ room }}' not mapped to a lab in vars/lab_name_mapping.yml"
+      when: resolved_lab_name is not defined
+
+    # 3) Resolve lab → interface tokens from lab_interfaces_mapping
+    - name: Normalize lab key variants
+      set_fact:
+        _lab_key_1: "{{ resolved_lab_name }}"
+        _lab_key_2: "{{ resolved_lab_name | replace('-', '_') }}"
+        _lab_key_3: "{{ resolved_lab_name | replace('_', '-') }}"
+
+    - name: Get lab interface tokens
       set_fact:
         lab_entry: >-
           {{
-            lab_interfaces_mapping.get(_lab_key_1) |
-            default(lab_interfaces_mapping.get(_lab_key_2)) |
-            default(lab_interfaces_mapping.get(_lab_key_3))
+            lab_interfaces_mapping.get(_lab_key_1)
+            | default(lab_interfaces_mapping.get(_lab_key_2))
+            | default(lab_interfaces_mapping.get(_lab_key_3))
           }}
 
-    - name: Fail if lab name not found in mapping
+    - name: Fail if lab key not found in lab_interfaces_mapping
       fail:
-        msg: "Lab '{{ lab_name }}' not found in vars/lab_interfaces_mapping.yml"
+        msg: "Lab '{{ resolved_lab_name }}' not found in vars/lab_interfaces_mapping.yml"
       when: lab_entry is not defined
 
-    - name: Canonicalize lab_entry to a list (in case it was a string)
+    - name: Canonicalize tokens to list
       set_fact:
         lab_raw_list: "{{ [lab_entry] if (lab_entry is string) else lab_entry }}"
 
-    - name: Initialize accumulation list
+    - name: Init expanded list
       set_fact:
         interfaces_expanded: []
 
-    # Expand each token:
-    # - If token contains a comma string like "2/10 , 2/11", split and trim.
-    # - If token is a simple port like "2/7", append it.
-    # - If token is a range like "2/4-2/6" (same prefix before last '/'), expand numerically.
-    - name: Expand lab interface tokens into a flat list
+    # Expand:
+    # - "2/4-2/6" → ["2/4","2/5","2/6"]
+    # - "2/10 , 2/11" → ["2/10","2/11"]
+    # - "2/7" → ["2/7"]
+    - name: Expand tokens into a flat interface list
       set_fact:
         interfaces_expanded: >-
           {{
             (interfaces_expanded | default([])) + (
               (
-                # Case A: token has commas (e.g. "2/10 , 2/11")
                 (item | string) is search(',')
               )
               |
               ternary(
-                # Split by comma and trim
                 ((item | string).split(',') | map('trim') | list),
                 (
-                  # Case B: token is a range "2/4-2/6"
                   ((item | string) is search('-'))
                   |
                   ternary(
                     (
-                      # Build range with same base before last '/'
-                      (
-                        range(
-                          (((item.split('-')[0] | trim).rsplit('/',1)[1]) | int),
-                          (((item.split('-')[1] | trim).rsplit('/',1)[1]) | int) + 1
-                        )
-                        | list
+                      range(
+                        (((item.split('-')[0] | trim).rsplit('/',1)[1]) | int),
+                        (((item.split('-')[1] | trim).rsplit('/',1)[1]) | int) + 1
                       )
-                      | map('string')
-                      | map('regex_replace', '^(.*)$', ((item.split('-')[0] | trim).rsplit('/',1)[0]) ~ '/\\1')
                       | list
-                    ),
-                    # Case C: single port like "2/7"
+                    )
+                    | map('string')
+                    | map('regex_replace', '^(.*)$', ((item.split('-')[0] | trim).rsplit('/',1)[0]) ~ '/\\1')
+                    | list
+                  ,
                     [ (item | string) | trim ]
                   )
                 )
@@ -83,26 +120,26 @@
       set_fact:
         lab_interfaces: "{{ interfaces_expanded | reject('equalto','') | unique | list }}"
 
-    - name: Fail if list is empty after parsing
+    - name: Ensure we have interfaces
       fail:
-        msg: "No interfaces parsed for lab '{{ lab_name }}'. Check your mapping syntax."
+        msg: "No interfaces parsed for lab '{{ resolved_lab_name }}'. Check vars/lab_interfaces_mapping.yml"
       when: lab_interfaces | length == 0
 
     - name: Validate action (enable|disable)
       assert:
-        that:
-          - action in ['enable', 'disable']
+        that: [ action in ['enable','disable'] ]
         fail_msg: "Invalid action '{{ action }}'. Use 'enable' or 'disable'."
 
-    - name: Add target switch dynamically (requires switch_name to exist in inventory)
+    # Hand off to Play 2
+    - name: Add resolved switch as target host
       add_host:
         name: "{{ switch_name }}"
         groups: lab_switch
-        # Pass computed vars to the host for Play 2
         lab_interfaces: "{{ lab_interfaces }}"
         lab_action: "{{ action }}"
+        resolved_lab_name: "{{ resolved_lab_name }}"
 
-# Play 2: Apply enable/disable on each interface of the lab
+# Play 2: Apply enable/disable on each interface of the resolved switch
 - name: Apply bulk interface state on ArubaOS-Switch
   hosts: lab_switch
   gather_facts: false
@@ -113,14 +150,15 @@
     - community.network
 
   tasks:
-    - name: Show what will be changed
+    - name: Plan summary
       debug:
         msg:
           - "Switch: {{ inventory_hostname }}"
+          - "Lab: {{ resolved_lab_name }}"
           - "Action: {{ lab_action }}"
           - "Interfaces: {{ lab_interfaces | join(', ') }}"
 
-    - name: Enable/Disable each lab interface
+    - name: Apply {{ lab_action }} on each lab interface
       community.network.aruba_config:
         parents: "interface {{ item }}"
         lines:
