@@ -150,7 +150,7 @@
         - name: Configure none device interface settings
           aruba_config:
             lines:
-              - "name {{ hostvars[inventory_hostname]['interface_description'] }}"
+              - "name \"{{ hostvars[inventory_hostname]['interface_description'] }}\""
               - "speed-duplex auto"
               - "disable"
             parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
