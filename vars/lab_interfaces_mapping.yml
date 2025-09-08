@@ -1,0 +1,11 @@
+# Map each lab key → interface list(s) or ranges
+lab_interfaces_mapping:
+  lab_37:
+    - "2/8-2/29"
+  lab_38:
+    - "2/7"
+    - "2/8"
+    - "2/9"
+  lab_39:
+    - "2/10"
+    - "2/11"
