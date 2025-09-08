@@ -44,13 +44,13 @@
 
     - name: Get Interface Description
       set_fact:
-        interface_description: "{{ interface_descriptions[room] | default('Port_' + room + '_WP' + port_number) }}"
-      when: room is defined and room != ''
+        interface_description: "{{ interface_descriptions[room] | default('Port_' + (room | string) + '_WP' + (port_number | string)) }}"
+      when: room is defined and room != '' and room is not none
 
     - name: Set default interface description when room is not provided
       set_fact:
-        interface_description: "Port_WP{{ port_number }}"
-      when: room is not defined or room == ''
+        interface_description: "Port_WP{{ port_number | string }}"
+      when: room is not defined or room == '' or room is none
 
     - name: Add Resolved Switch to Inventory
       add_host:
