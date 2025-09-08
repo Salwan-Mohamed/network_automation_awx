@@ -7,6 +7,8 @@
     - ../vars/interface_name.yml
     - ../vars/vlan_mapping.yml
     - ../vars/wall_point_mapping.yml
+  collections:
+    - community.network
 
   tasks:
     - name: Find Switch for Given Room
@@ -54,6 +56,8 @@
   vars_files:
     - ../vars/vlan_mapping.yml
   connection: network_cli
+  collections:
+    - community.network
   
   tasks:
     - name: Debug switch information
@@ -66,27 +70,27 @@
           - "Second Device Type: {{ hostvars[inventory_hostname]['ansible_second_device_type'] }}"
 
     - name: Reset the interface to default configuration
-      ansible.netcommon.cli_config:
-        config: |
-          no interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}
-          interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}
+      aruba_config:
+        lines:
+          - "no interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+          - "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
 
     - name: Configure interface for phone only (Case 1)
       when: hostvars[inventory_hostname]['ansible_device_type'] == "phone"
       block:
         - name: Configure phone interface settings
-          ansible.netcommon.cli_config:
-            config: |
-              interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}
-              name {{ hostvars[inventory_hostname]['interface_description'] }}
-              tagged vlan {{ vlan_mapping.phone }}
-              speed-duplex auto
-              enable
+          aruba_config:
+            lines:
+              - "name {{ hostvars[inventory_hostname]['interface_description'] }}"
+              - "tagged vlan {{ vlan_mapping.phone }}"
+              - "speed-duplex auto"
+              - "enable"
+            parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
         
         - name: Configure port security for phone
-          ansible.netcommon.cli_config:
-            config: |
-              port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 1 learn-mode static action send-disable
+          aruba_config:
+            lines:
+              - "port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 1 learn-mode static action send-disable"
 
     - name: Configure interface for non-phone devices (Case 2)
       when:
@@ -95,37 +99,37 @@
         - hostvars[inventory_hostname]['ansible_second_device_type'] == "none"
       block:
         - name: Configure non-phone device interface settings
-          ansible.netcommon.cli_config:
-            config: |
-              interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}
-              name {{ hostvars[inventory_hostname]['interface_description'] }}
-              untagged vlan {{ vlan_mapping[hostvars[inventory_hostname]['ansible_device_type']] }}
-              speed-duplex auto
-              enable
+          aruba_config:
+            lines:
+              - "name {{ hostvars[inventory_hostname]['interface_description'] }}"
+              - "untagged vlan {{ vlan_mapping[hostvars[inventory_hostname]['ansible_device_type']] }}"
+              - "speed-duplex auto"
+              - "enable"
+            parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
         
         - name: Configure port security for non-phone device
-          ansible.netcommon.cli_config:
-            config: |
-              port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 1 learn-mode static action send-disable
+          aruba_config:
+            lines:
+              - "port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 1 learn-mode static action send-disable"
 
     - name: Configure interface for device with phone (Case 3)
       when:
         - hostvars[inventory_hostname]['ansible_second_device_type'] == "phone"
       block:
         - name: Configure device with phone interface settings
-          ansible.netcommon.cli_config:
-            config: |
-              interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}
-              name {{ hostvars[inventory_hostname]['interface_description'] }}
-              untagged vlan {{ vlan_mapping[hostvars[inventory_hostname]['ansible_device_type']] }}
-              tagged vlan {{ vlan_mapping.phone }}
-              speed-duplex auto
-              enable
+          aruba_config:
+            lines:
+              - "name {{ hostvars[inventory_hostname]['interface_description'] }}"
+              - "untagged vlan {{ vlan_mapping[hostvars[inventory_hostname]['ansible_device_type']] }}"
+              - "tagged vlan {{ vlan_mapping.phone }}"
+              - "speed-duplex auto"
+              - "enable"
+            parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
         
         - name: Configure port security for device with phone
-          ansible.netcommon.cli_config:
-            config: |
-              port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 2 learn-mode static action send-disable
+          aruba_config:
+            lines:
+              - "port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 2 learn-mode static action send-disable"
 
     - name: Configure interface for none device (Case 4)
       when: 
@@ -133,19 +137,19 @@
         - hostvars[inventory_hostname]['ansible_second_device_type'] == "none"
       block:
         - name: Configure none device interface settings
-          ansible.netcommon.cli_config:
-            config: |
-              interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}
-              name {{ hostvars[inventory_hostname]['interface_description'] }}
-              speed-duplex auto
-              disable
+          aruba_config:
+            lines:
+              - "name {{ hostvars[inventory_hostname]['interface_description'] }}"
+              - "speed-duplex auto"
+              - "disable"
+            parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
         
         - name: Configure port security for none device
-          ansible.netcommon.cli_config:
-            config: |
-              port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 1 learn-mode static action send-disable
+          aruba_config:
+            lines:
+              - "port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 1 learn-mode static action send-disable"
 
     - name: Save configuration
-      ansible.netcommon.cli_config:
-        config: |
-          write memory
+      aruba_config:
+        lines:
+          - "write memory"
