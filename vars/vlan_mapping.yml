@@ -1,7 +1,7 @@
 vlan_mapping:
   phone: 128
   cam: 236
-  printer: 231
+  printer: 131
   pc: 80
   projector: 233
   zero_client: 141
