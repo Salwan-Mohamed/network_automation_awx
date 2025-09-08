@@ -24,13 +24,18 @@
 
     - name: Convert Wall Point to Switch Port
       set_fact:
-        port_number: "{{ wall_point_mapping[wall_point] }}"
-      when: wall_point is defined
+        actual_port_number: "{{ wall_point_mapping[port_number] }}"
+      when: port_number is defined and port_number in wall_point_mapping
 
-    - name: Fail if Wall Point Not Found
+    - name: Use direct port number if not in wall point mapping
+      set_fact:
+        actual_port_number: "{{ port_number }}"
+      when: port_number is defined and port_number not in wall_point_mapping
+
+    - name: Fail if Port Number Not Provided
       fail:
-        msg: "Wall point {{ wall_point }} not found in mapping. Check wall_point_mapping.yml"
-      when: port_number is not defined
+        msg: "Port number is required"
+      when: port_number is not defined or port_number == ''
 
     - name: Validate Device Type
       fail:
@@ -39,13 +44,19 @@
 
     - name: Get Interface Description
       set_fact:
-        interface_description: "{{ interface_descriptions[room] | default('Port_' + room + '_WP' + wall_point) }}"
+        interface_description: "{{ interface_descriptions[room] | default('Port_' + room + '_WP' + port_number) }}"
+      when: room is defined and room != ''
+
+    - name: Set default interface description when room is not provided
+      set_fact:
+        interface_description: "Port_WP{{ port_number }}"
+      when: room is not defined or room == ''
 
     - name: Add Resolved Switch to Inventory
       add_host:
         name: "{{ switch_name }}"
         groups: dynamic_switches
-        ansible_port_number: "{{ port_number }}"
+        ansible_port_number: "{{ actual_port_number }}"
         interface_description: "{{ interface_description }}"
         ansible_device_type: "{{ device_type }}"
         ansible_second_device_type: "{{ second_device_type | default('none') }}"
