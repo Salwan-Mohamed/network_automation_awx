@@ -63,10 +63,10 @@
         interface_description: "{{ interface_description }}"
         ansible_device_type: "{{ device_type | default('none') }}"
         ansible_second_device_type: "{{ second_device_type | default('none') }}"
-        # If the inventory does not already contain the host/IP for switch_name, also provide:
+        # If inventory lacks 'switch_name' with an IP, also set:
         # ansible_host: "{{ switch_ip_mapping[switch_name] }}"
 
-# Play 2: Configure the ArubaOS-Switch interface (AOS-S)
+# Play 2: Configure the ArubaOS-Switch interface
 - name: Configure Aruba Switch Port Based on Device Type and Configuration Cases
   hosts: dynamic_switches
   gather_facts: false
@@ -76,9 +76,9 @@
   vars_files:
     - ../vars/vlan_mapping.yml
 
-  # Cleanup strategy before applying new VLANs:
-  #   wipe -> remove ALL existing VLANs
-  #   safe -> remove only VLANs not part of desired state
+  # Cleanup strategy for Case 1 & 2:
+  #   wipe -> remove ALL existing VLANs first
+  #   safe -> remove only VLANs not in desired state
   vars:
     cleanup_strategy: wipe   # wipe | safe
 
@@ -144,6 +144,7 @@
             tagged vlan {{ vlan_mapping.phone }}
             speed-duplex auto
             enable
+      when: ansible_device_type == "phone"
 
     - name: CASE 1 | Port security (GLOBAL config, not under interface)
       ansible.netcommon.cli_config:
@@ -151,6 +152,7 @@
           port-security learn-mode static {{ ansible_port_number }}
           port-security address-limit 1 {{ ansible_port_number }}
           port-security action send-disable {{ ansible_port_number }}
+      when: ansible_device_type == "phone"
 
     ###########################################################################
     # CASE 2: Non-phone device only (untagged = device VLAN)
@@ -201,7 +203,11 @@
           {% for v in c2_remove_tagged | default([]) %}
             no tagged vlan {{ v }}
           {% endfor %}
-      when: ((c2_remove_untagged | default([])) | length > 0) or ((c2_remove_tagged | default([])) | length > 0)
+      when:
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
+        - ((c2_remove_untagged | default([])) | length > 0) or ((c2_remove_tagged | default([])) | length > 0)
 
     - name: CASE 2 | Apply non-phone interface config
       ansible.netcommon.cli_config:
@@ -211,6 +217,10 @@
             untagged vlan {{ vlan_mapping[ansible_device_type] }}
             speed-duplex auto
             enable
+      when:
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
 
     - name: CASE 2 | Port security (GLOBAL config, not under interface)
       ansible.netcommon.cli_config:
@@ -218,6 +228,10 @@
           port-security learn-mode static {{ ansible_port_number }}
           port-security address-limit 1 {{ ansible_port_number }}
           port-security action send-disable {{ ansible_port_number }}
+      when:
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
 
     ###########################################################################
     # CASE 3: Device + Phone (untagged = device VLAN, tagged = phone VLAN)
