@@ -67,18 +67,18 @@
         ansible_second_device_type: "{{ second_device_type | default('none') }}"
 
 # ────────────────────────────────────────────────────────────────────────────────
-# Play 2: Configure the Aruba switch interface
+# Play 2: Configure the Aruba switch interface (AOS-S style)
 # ────────────────────────────────────────────────────────────────────────────────
 - name: Configure Aruba Switch Port Based on Device Type and Configuration Cases
   hosts: dynamic_switches
   gather_facts: false
   connection: network_cli
   collections:
-    - community.network
+    - ansible.netcommon
   vars_files:
     - ../vars/vlan_mapping.yml
 
-  # Choose cleanup strategy:
+  # Cleanup strategy before applying new VLANs:
   #   wipe → remove ALL existing VLANs (Solution A)
   #   safe → remove only VLANs not in desired state (Solution B)
   vars:
@@ -95,18 +95,17 @@
           - "Second Device Type: {{ ansible_second_device_type }}"
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Case 1: Phone only
+    # Case 1: Phone only  (tagged = phone VLAN)
     # ──────────────────────────────────────────────────────────────────────────
-    - name: CASE 1 | Phone-only | Read current config for this interface
-      community.network.aruba_command:
-        commands:
-          - "show running-config interface {{ ansible_port_number }}"
-      register: c1_iface_cmd
+    - name: CASE 1 | Phone-only | Read current interface config
+      ansible.netcommon.cli_command:
+        command: "show running-config interface {{ ansible_port_number }}"
+      register: c1_iface_cfg
       when: ansible_device_type == "phone"
 
     - name: CASE 1 | Parse existing VLAN membership
       set_fact:
-        c1_text: "{{ (c1_iface_cmd.stdout[0] | default('')) | lower }}"
+        c1_text: "{{ (c1_iface_cfg.stdout | default('')) | lower }}"
         c1_old_untagged: "{{ c1_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
         c1_old_tagged:   "{{ c1_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
         c1_desired_untagged: []
@@ -130,27 +129,25 @@
         - cleanup_strategy == "safe"
 
     - name: CASE 1 | Remove old UNTAGGED VLAN(s)
-      community.network.aruba_config:
+      ansible.netcommon.cli_config:
         parents: "interface {{ ansible_port_number }}"
-        lines:
-          - "no untagged vlan {{ item }}"
+        lines: ["no untagged vlan {{ item }}"]
       loop: "{{ c1_remove_untagged | default([]) }}"
       when:
         - ansible_device_type == "phone"
         - (c1_remove_untagged | default([])) | length > 0
 
     - name: CASE 1 | Remove old TAGGED VLAN(s)
-      community.network.aruba_config:
+      ansible.netcommon.cli_config:
         parents: "interface {{ ansible_port_number }}"
-        lines:
-          - "no tagged vlan {{ item }}"
+        lines: ["no tagged vlan {{ item }}"]
       loop: "{{ c1_remove_tagged | default([]) }}"
       when:
         - ansible_device_type == "phone"
         - (c1_remove_tagged | default([])) | length > 0
 
     - name: CASE 1 | Apply phone-only interface config
-      community.network.aruba_config:
+      ansible.netcommon.cli_config:
         parents: "interface {{ ansible_port_number }}"
         lines:
           - "name {{ interface_description | quote }}"
@@ -158,23 +155,20 @@
           - "speed-duplex auto"
           - "enable"
 
-    - name: CASE 1 | Port security (interface context)
-      community.network.aruba_config:
-        parents: "interface {{ ansible_port_number }}"
+    - name: CASE 1 | Port security (GLOBAL parent, not under interface)
+      ansible.netcommon.cli_config:
         lines:
-          - "port-security"
-          - "port-security address-limit 1"
-          - "port-security learn-mode static"
-          - "port-security action send-disable"
+          - "port-security {{ ansible_port_number }} learn-mode static"
+          - "port-security {{ ansible_port_number }} address-limit 1"
+          - "port-security {{ ansible_port_number }} action send-disable"
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Case 2: Non-phone device only
+    # Case 2: Non-phone device only (untagged = device VLAN)
     # ──────────────────────────────────────────────────────────────────────────
-    - name: CASE 2 | Non-phone | Read current config for this interface
-      community.network.aruba_command:
-        commands:
-          - "show running-config interface {{ ansible_port_number }}"
-      register: c2_iface_cmd
+    - name: CASE 2 | Non-phone | Read current interface config
+      ansible.netcommon.cli_command:
+        command: "show running-config interface {{ ansible_port_number }}"
+      register: c2_iface_cfg
       when:
         - ansible_device_type != "phone"
         - ansible_device_type != "none"
@@ -182,7 +176,7 @@
 
     - name: CASE 2 | Parse existing VLAN membership
       set_fact:
-        c2_text: "{{ (c2_iface_cmd.stdout[0] | default('')) | lower }}"
+        c2_text: "{{ (c2_iface_cfg.stdout | default('')) | lower }}"
         c2_old_untagged: "{{ c2_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
         c2_old_tagged:   "{{ c2_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
         c2_desired_untagged: ["{{ vlan_mapping[ansible_device_type] | string }}"]
@@ -213,23 +207,21 @@
         - cleanup_strategy == "safe"
 
     - name: CASE 2 | Remove old UNTAGGED VLAN(s)
-      community.network.aruba_config:
+      ansible.netcommon.cli_config:
         parents: "interface {{ ansible_port_number }}"
-        lines:
-          - "no untagged vlan {{ item }}"
+        lines: ["no untagged vlan {{ item }}"]
       loop: "{{ c2_remove_untagged | default([]) }}"
       when: (c2_remove_untagged | default([])) | length > 0
 
     - name: CASE 2 | Remove old TAGGED VLAN(s)
-      community.network.aruba_config:
+      ansible.netcommon.cli_config:
         parents: "interface {{ ansible_port_number }}"
-        lines:
-          - "no tagged vlan {{ item }}"
+        lines: ["no tagged vlan {{ item }}"]
       loop: "{{ c2_remove_tagged | default([]) }}"
       when: (c2_remove_tagged | default([])) | length > 0
 
     - name: CASE 2 | Apply non-phone interface config
-      community.network.aruba_config:
+      ansible.netcommon.cli_config:
         parents: "interface {{ ansible_port_number }}"
         lines:
           - "name {{ interface_description | quote }}"
@@ -237,23 +229,21 @@
           - "speed-duplex auto"
           - "enable"
 
-    - name: CASE 2 | Port security (interface context)
-      community.network.aruba_config:
-        parents: "interface {{ ansible_port_number }}"
+    - name: CASE 2 | Port security (GLOBAL parent, not under interface)
+      ansible.netcommon.cli_config:
         lines:
-          - "port-security"
-          - "port-security address-limit 1"
-          - "port-security learn-mode static"
-          - "port-security action send-disable"
+          - "port-security {{ ansible_port_number }} learn-mode static"
+          - "port-security {{ ansible_port_number }} address-limit 1"
+          - "port-security {{ ansible_port_number }} action send-disable"
 
     # ──────────────────────────────────────────────────────────────────────────
-    # Case 3: Device + Phone
+    # Case 3: Device + Phone (untagged = device VLAN, tagged = phone VLAN)
     # ──────────────────────────────────────────────────────────────────────────
     - name: CASE 3 | Device with phone | Apply config
       when: ansible_second_device_type == "phone"
       block:
         - name: CASE 3 | Apply interface config
-          community.network.aruba_config:
+          ansible.netcommon.cli_config:
             parents: "interface {{ ansible_port_number }}"
             lines:
               - "name {{ interface_description | quote }}"
@@ -262,14 +252,12 @@
               - "speed-duplex auto"
               - "enable"
 
-        - name: CASE 3 | Port security (allow 2)
-          community.network.aruba_config:
-            parents: "interface {{ ansible_port_number }}"
+        - name: CASE 3 | Port security (GLOBAL parent; allow 2)
+          ansible.netcommon.cli_config:
             lines:
-              - "port-security"
-              - "port-security address-limit 2"
-              - "port-security learn-mode static"
-              - "port-security action send-disable"
+              - "port-security {{ ansible_port_number }} learn-mode static"
+              - "port-security {{ ansible_port_number }} address-limit 2"
+              - "port-security {{ ansible_port_number }} action send-disable"
 
     # ──────────────────────────────────────────────────────────────────────────
     # Case 4: None (admin down)
@@ -280,23 +268,20 @@
         - ansible_second_device_type == "none"
       block:
         - name: CASE 4 | Apply interface config
-          community.network.aruba_config:
+          ansible.netcommon.cli_config:
             parents: "interface {{ ansible_port_number }}"
             lines:
               - "name {{ interface_description | quote }}"
               - "speed-duplex auto"
               - "disable"
 
-        - name: CASE 4 | Port security (restrict 1 even if admin down)
-          community.network.aruba_config:
-            parents: "interface {{ ansible_port_number }}"
+        - name: CASE 4 | Port security (GLOBAL parent; keep 1)
+          ansible.netcommon.cli_config:
             lines:
-              - "port-security"
-              - "port-security address-limit 1"
-              - "port-security learn-mode static"
-              - "port-security action send-disable"
+              - "port-security {{ ansible_port_number }} learn-mode static"
+              - "port-security {{ ansible_port_number }} address-limit 1"
+              - "port-security {{ ansible_port_number }} action send-disable"
 
     - name: Save configuration
-      community.network.aruba_command:
-        commands:
-          - "write memory"
+      ansible.netcommon.cli_command:
+        command: "write memory"
