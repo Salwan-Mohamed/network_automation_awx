@@ -8,9 +8,6 @@
     - vars/lab_name_mapping.yml          # lab_name_mapping: { room: lab_key }
     - vars/lab_interfaces_mapping.yml    # lab_interfaces_mapping: { lab_key: [ports or ranges] }
 
-  vars:
-    action: "{{ action | default(omit) }}"
-
   tasks:
     # 1) Find switch by room (case-insensitive)
     - name: Locate switch for given room
@@ -27,13 +24,13 @@
         msg: "Room '{{ room }}' not found in vars/switch_mapping.yml"
       when: switch_name is not defined
 
-    # 2) Build a lowercased lookup for lab_name_mapping to handle case & separators
+    # 2) Build a case-insensitive map for room → lab
     - name: Build case-insensitive lab_name mapping
       set_fact:
         lab_name_mapping_ci: "{{ lab_name_mapping_ci | default({}) | combine({ (item.key | lower): item.value }) }}"
       loop: "{{ lab_name_mapping | dict2items }}"
 
-    # Try direct, underscore↔hyphen, then case-insensitive
+    # Resolve lab name with exact, hyphen/underscore, then case-insensitive match
     - name: Resolve lab name from room
       set_fact:
         resolved_lab_name: >-
@@ -49,7 +46,7 @@
         msg: "Room '{{ room }}' not mapped to a lab in vars/lab_name_mapping.yml"
       when: resolved_lab_name is not defined
 
-    # 3) Resolve lab → interface tokens from lab_interfaces_mapping
+    # 3) Resolve lab → interface tokens
     - name: Normalize lab key variants
       set_fact:
         _lab_key_1: "{{ resolved_lab_name }}"
@@ -125,9 +122,11 @@
         msg: "No interfaces parsed for lab '{{ resolved_lab_name }}'. Check vars/lab_interfaces_mapping.yml"
       when: lab_interfaces | length == 0
 
+    # ✅ YAML-safe assert (block list + quoted expression)
     - name: Validate action (enable|disable)
       assert:
-        that: [ action in ['enable','disable'] ]
+        that:
+          - "action in ['enable', 'disable']"
         fail_msg: "Invalid action '{{ action }}'. Use 'enable' or 'disable'."
 
     # Hand off to Play 2
