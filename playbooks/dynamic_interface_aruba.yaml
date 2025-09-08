@@ -1,7 +1,5 @@
 ---
-# ────────────────────────────────────────────────────────────────────────────────
 # Play 1: Resolve target switch & port from room/wall point
-# ────────────────────────────────────────────────────────────────────────────────
 - name: Resolve Switch Based on Room Number and Convert Wall Point
   hosts: localhost
   gather_facts: false
@@ -65,10 +63,10 @@
         interface_description: "{{ interface_description }}"
         ansible_device_type: "{{ device_type | default('none') }}"
         ansible_second_device_type: "{{ second_device_type | default('none') }}"
+        # If your inventory does NOT already contain switch_name with an IP,
+        # also include: ansible_host: "{{ switch_ip_mapping[switch_name] }}"
 
-# ────────────────────────────────────────────────────────────────────────────────
-# Play 2: Configure the Aruba switch interface (AOS-S style)
-# ────────────────────────────────────────────────────────────────────────────────
+# Play 2: Configure the ArubaOS-Switch interface
 - name: Configure Aruba Switch Port Based on Device Type and Configuration Cases
   hosts: dynamic_switches
   gather_facts: false
@@ -78,9 +76,9 @@
   vars_files:
     - ../vars/vlan_mapping.yml
 
-  # Cleanup strategy before applying new VLANs:
-  #   wipe → remove ALL existing VLANs (Solution A)
-  #   safe → remove only VLANs not in desired state (Solution B)
+  # Cleanup strategy:
+  #   wipe -> remove ALL existing VLANs before applying new ones
+  #   safe -> remove only VLANs not part of desired state
   vars:
     cleanup_strategy: wipe   # wipe | safe
 
@@ -94,9 +92,7 @@
           - "Primary Device Type: {{ ansible_device_type }}"
           - "Second Device Type: {{ ansible_second_device_type }}"
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Case 1: Phone only  (tagged = phone VLAN)
-    # ──────────────────────────────────────────────────────────────────────────
+    # ----------------------------- Case 1: Phone only -----------------------------
     - name: CASE 1 | Phone-only | Read current interface config
       ansible.netcommon.cli_command:
         command: "show running-config interface {{ ansible_port_number }}"
@@ -155,16 +151,14 @@
           - "speed-duplex auto"
           - "enable"
 
-    - name: CASE 1 | Port security (GLOBAL parent, not under interface)
+    - name: CASE 1 | Port security (GLOBAL config, not under interface)
       ansible.netcommon.cli_config:
         lines:
-          - "port-security {{ ansible_port_number }} learn-mode static"
-          - "port-security {{ ansible_port_number }} address-limit 1"
-          - "port-security {{ ansible_port_number }} action send-disable"
+          - "port-security learn-mode static {{ ansible_port_number }}"
+          - "port-security address-limit 1 {{ ansible_port_number }}"
+          - "port-security action send-disable {{ ansible_port_number }}"
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Case 2: Non-phone device only (untagged = device VLAN)
-    # ──────────────────────────────────────────────────────────────────────────
+    # ----------------------- Case 2: Non-phone device only -----------------------
     - name: CASE 2 | Non-phone | Read current interface config
       ansible.netcommon.cli_command:
         command: "show running-config interface {{ ansible_port_number }}"
@@ -229,16 +223,14 @@
           - "speed-duplex auto"
           - "enable"
 
-    - name: CASE 2 | Port security (GLOBAL parent, not under interface)
+    - name: CASE 2 | Port security (GLOBAL config, not under interface)
       ansible.netcommon.cli_config:
         lines:
-          - "port-security {{ ansible_port_number }} learn-mode static"
-          - "port-security {{ ansible_port_number }} address-limit 1"
-          - "port-security {{ ansible_port_number }} action send-disable"
+          - "port-security learn-mode static {{ ansible_port_number }}"
+          - "port-security address-limit 1 {{ ansible_port_number }}"
+          - "port-security action send-disable {{ ansible_port_number }}"
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Case 3: Device + Phone (untagged = device VLAN, tagged = phone VLAN)
-    # ──────────────────────────────────────────────────────────────────────────
+    # ---------------------- Case 3: Device + Phone on port ----------------------
     - name: CASE 3 | Device with phone | Apply config
       when: ansible_second_device_type == "phone"
       block:
@@ -252,16 +244,14 @@
               - "speed-duplex auto"
               - "enable"
 
-        - name: CASE 3 | Port security (GLOBAL parent; allow 2)
+        - name: CASE 3 | Port security (GLOBAL config; allow 2)
           ansible.netcommon.cli_config:
             lines:
-              - "port-security {{ ansible_port_number }} learn-mode static"
-              - "port-security {{ ansible_port_number }} address-limit 2"
-              - "port-security {{ ansible_port_number }} action send-disable"
+              - "port-security learn-mode static {{ ansible_port_number }}"
+              - "port-security address-limit 2 {{ ansible_port_number }}"
+              - "port-security action send-disable {{ ansible_port_number }}"
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Case 4: None (admin down)
-    # ──────────────────────────────────────────────────────────────────────────
+    # ---------------------- Case 4: None (admin down port) ----------------------
     - name: CASE 4 | None device | Apply config
       when:
         - ansible_device_type == "none"
@@ -275,12 +265,12 @@
               - "speed-duplex auto"
               - "disable"
 
-        - name: CASE 4 | Port security (GLOBAL parent; keep 1)
+        - name: CASE 4 | Port security (GLOBAL config; keep 1)
           ansible.netcommon.cli_config:
             lines:
-              - "port-security {{ ansible_port_number }} learn-mode static"
-              - "port-security {{ ansible_port_number }} address-limit 1"
-              - "port-security {{ ansible_port_number }} action send-disable"
+              - "port-security learn-mode static {{ ansible_port_number }}"
+              - "port-security address-limit 1 {{ ansible_port_number }}"
+              - "port-security action send-disable {{ ansible_port_number }}"
 
     - name: Save configuration
       ansible.netcommon.cli_command:
