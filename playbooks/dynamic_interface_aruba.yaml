@@ -1,0 +1,285 @@
+---
+# ────────────────────────────────────────────────────────────────────────────────
+# Play 1: Resolve target switch & port from room/wall point
+# ────────────────────────────────────────────────────────────────────────────────
+- name: Resolve Switch Based on Room Number and Convert Wall Point
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+    - ../vars/switch_mapping.yml
+    - ../vars/interface_name.yml
+    - ../vars/vlan_mapping.yml
+    - ../vars/wall_point_mapping.yml
+
+  tasks:
+    - name: Find Switch for Given Room
+      set_fact:
+        switch_name: "{{ item.key }}"
+      loop: "{{ switch_mapping | dict2items }}"
+      when: >
+        room is defined and room | length > 0 and
+        (room | lower) in ((item.value | map('lower') | list))
+    - name: Fail if No Matching Switch is Found
+      fail:
+        msg: "No switch found for room {{ room }}. Check switch_mapping.yml"
+      when: switch_name is not defined
+
+    - name: Convert wall point label to actual switch port (if mapping exists)
+      set_fact:
+        actual_port_number: "{{ wall_point_mapping[port_number] }}"
+      when: port_number is defined and port_number in wall_point_mapping
+
+    - name: Use direct port number if not in wall point mapping
+      set_fact:
+        actual_port_number: "{{ port_number }}"
+      when: port_number is defined and port_number not in wall_point_mapping
+
+    - name: Fail if Port Number Not Provided
+      fail:
+        msg: "Port number is required"
+      when: actual_port_number is not defined or actual_port_number | string == ""
+
+    - name: Get Interface Description (from table, else fallback)
+      set_fact:
+        interface_description: >-
+          {{
+            interface_descriptions.get(room,
+              'Port_' ~ (room | string) ~ '_WP' ~ (port_number | string)
+            )
+            if room is defined and room is not none and (room | string) | length > 0
+            else 'Port_WP' ~ (port_number | string)
+          }}
+
+    - name: Add Resolved Switch to Inventory
+      add_host:
+        name: "{{ switch_name }}"
+        groups: dynamic_switches
+        ansible_port_number: "{{ actual_port_number }}"
+        interface_description: "{{ interface_description }}"
+        ansible_device_type: "{{ device_type }}"
+        ansible_second_device_type: "{{ second_device_type | default('none') }}"
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Play 2: Configure the Aruba switch interface
+# ────────────────────────────────────────────────────────────────────────────────
+- name: Configure Aruba Switch Port Based on Device Type and Configuration Cases
+  hosts: dynamic_switches
+  gather_facts: no
+  connection: network_cli
+  vars_files:
+    - ../vars/vlan_mapping.yml
+
+  # Choose cleanup strategy:
+  #   wipe → remove ALL existing VLANs (Solution A)
+  #   safe → remove only VLANs not in desired state (Solution B)
+  vars:
+    cleanup_strategy: wipe   # wipe | safe
+
+  collections:
+    - community.network
+    - ansible.netcommon
+
+  tasks:
+    - name: Debug (switch/port/input)
+      debug:
+        msg:
+          - "Switch: {{ inventory_hostname }}"
+          - "Port: {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+          - "Interface Description: {{ hostvars[inventory_hostname]['interface_description'] }}"
+          - "Primary Device Type: {{ hostvars[inventory_hostname]['ansible_device_type'] }}"
+          - "Second Device Type: {{ hostvars[inventory_hostname]['ansible_second_device_type'] }}"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Case 1: Phone only
+    # ──────────────────────────────────────────────────────────────────────────
+    - name: CASE 1 | Phone-only | Read current config for this interface
+      ansible.netcommon.cli_command:
+        command: "show running-config interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+      register: c1_iface_cfg
+      when: hostvars[inventory_hostname]['ansible_device_type'] == "phone"
+
+    - name: CASE 1 | Parse existing VLAN membership
+      set_fact:
+        c1_text: "{{ (c1_iface_cfg.stdout | default('')) | lower }}"
+        c1_old_untagged: "{{ c1_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
+        c1_old_tagged:   "{{ c1_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
+        c1_desired_untagged: []
+        c1_desired_tagged: ["{{ vlan_mapping.phone | string }}"]
+      when: hostvars[inventory_hostname]['ansible_device_type'] == "phone"
+
+    - name: CASE 1 | Compute removal lists (wipe = A)
+      set_fact:
+        c1_remove_untagged: "{{ c1_old_untagged }}"
+        c1_remove_tagged:   "{{ c1_old_tagged }}"
+      when:
+        - hostvars[inventory_hostname]['ansible_device_type'] == "phone"
+        - cleanup_strategy == "wipe"
+
+    - name: CASE 1 | Compute removal lists (safe = B)
+      set_fact:
+        c1_remove_untagged: "{{ (c1_old_untagged | map('string') | list) | difference(c1_desired_untagged) }}"
+        c1_remove_tagged:   "{{ (c1_old_tagged   | map('string') | list) | difference(c1_desired_tagged) }}"
+      when:
+        - hostvars[inventory_hostname]['ansible_device_type'] == "phone"
+        - cleanup_strategy == "safe"
+
+    - name: CASE 1 | Remove old UNTAGGED VLAN(s)
+      community.network.aruba_config:
+        parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+        lines:
+          - "no untagged vlan {{ item }}"
+      loop: "{{ c1_remove_untagged | default([]) }}"
+      when:
+        - hostvars[inventory_hostname]['ansible_device_type'] == "phone"
+        - (c1_remove_untagged | default([])) | length > 0
+
+    - name: CASE 1 | Remove old TAGGED VLAN(s)
+      community.network.aruba_config:
+        parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+        lines:
+          - "no tagged vlan {{ item }}"
+      loop: "{{ c1_remove_tagged | default([]) }}"
+      when:
+        - hostvars[inventory_hostname]['ansible_device_type'] == "phone"
+        - (c1_remove_tagged | default([])) | length > 0
+
+    - name: CASE 1 | Apply phone-only interface config
+      community.network.aruba_config:
+        parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+        lines:
+          - "name {{ hostvars[inventory_hostname]['interface_description'] | quote }}"
+          - "tagged vlan {{ vlan_mapping.phone }}"
+          - "speed-duplex auto"
+          - "enable"
+
+    - name: CASE 1 | Port security
+      community.network.aruba_config:
+        parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+        lines:
+          - "port-security address-limit 1 learn-mode static action send-disable"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Case 2: Non-phone device only
+    # ──────────────────────────────────────────────────────────────────────────
+    - name: CASE 2 | Non-phone | Read current config for this interface
+      ansible.netcommon.cli_command:
+        command: "show running-config interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+      register: c2_iface_cfg
+      when:
+        - hostvars[inventory_hostname]['ansible_device_type'] != "phone"
+        - hostvars[inventory_hostname]['ansible_device_type'] != "none"
+        - hostvars[inventory_hostname]['ansible_second_device_type'] == "none"
+
+    - name: CASE 2 | Parse existing VLAN membership
+      set_fact:
+        c2_text: "{{ (c2_iface_cfg.stdout | default('')) | lower }}"
+        c2_old_untagged: "{{ c2_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
+        c2_old_tagged:   "{{ c2_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
+        c2_desired_untagged: ["{{ vlan_mapping[hostvars[inventory_hostname]['ansible_device_type']] | string }}"]
+        c2_desired_tagged: []
+      when:
+        - hostvars[inventory_hostname]['ansible_device_type'] != "phone"
+        - hostvars[inventory_hostname]['ansible_device_type'] != "none"
+        - hostvars[inventory_hostname]['ansible_second_device_type'] == "none"
+
+    - name: CASE 2 | Compute removal lists (wipe = A)
+      set_fact:
+        c2_remove_untagged: "{{ c2_old_untagged }}"
+        c2_remove_tagged:   "{{ c2_old_tagged }}"
+      when:
+        - hostvars[inventory_hostname]['ansible_device_type'] != "phone"
+        - hostvars[inventory_hostname]['ansible_device_type'] != "none"
+        - hostvars[inventory_hostname]['ansible_second_device_type'] == "none"
+        - cleanup_strategy == "wipe"
+
+    - name: CASE 2 | Compute removal lists (safe = B)
+      set_fact:
+        c2_remove_untagged: "{{ (c2_old_untagged | map('string') | list) | difference(c2_desired_untagged) }}"
+        c2_remove_tagged:   "{{ (c2_old_tagged   | map('string') | list) | difference(c2_desired_tagged) }}"
+      when:
+        - hostvars[inventory_hostname]['ansible_device_type'] != "phone"
+        - hostvars[inventory_hostname]['ansible_device_type'] != "none"
+        - hostvars[inventory_hostname]['ansible_second_device_type'] == "none"
+        - cleanup_strategy == "safe"
+
+    - name: CASE 2 | Remove old UNTAGGED VLAN(s)
+      community.network.aruba_config:
+        parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+        lines:
+          - "no untagged vlan {{ item }}"
+      loop: "{{ c2_remove_untagged | default([]) }}"
+      when:
+        - (c2_remove_untagged | default([])) | length > 0
+
+    - name: CASE 2 | Remove old TAGGED VLAN(s)
+      community.network.aruba_config:
+        parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+        lines:
+          - "no tagged vlan {{ item }}"
+      loop: "{{ c2_remove_tagged | default([]) }}"
+      when:
+        - (c2_remove_tagged | default([])) | length > 0
+
+    - name: CASE 2 | Apply non-phone interface config
+      community.network.aruba_config:
+        parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+        lines:
+          - "name {{ hostvars[inventory_hostname]['interface_description'] | quote }}"
+          - "untagged vlan {{ vlan_mapping[hostvars[inventory_hostname]['ansible_device_type']] }}"
+          - "speed-duplex auto"
+          - "enable"
+
+    - name: CASE 2 | Port security
+      community.network.aruba_config:
+        parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+        lines:
+          - "port-security address-limit 1 learn-mode static action send-disable"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Case 3: Device + Phone (kept same logic; added quoted name)
+    # ──────────────────────────────────────────────────────────────────────────
+    - name: CASE 3 | Device with phone | Apply config
+      when: hostvars[inventory_hostname]['ansible_second_device_type'] == "phone"
+      block:
+        - name: CASE 3 | Apply interface config
+          community.network.aruba_config:
+            parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+            lines:
+              - "name {{ hostvars[inventory_hostname]['interface_description'] | quote }}"
+              - "untagged vlan {{ vlan_mapping[hostvars[inventory_hostname]['ansible_device_type']] }}"
+              - "tagged vlan {{ vlan_mapping.phone }}"
+              - "speed-duplex auto"
+              - "enable"
+
+        - name: CASE 3 | Port security
+          community.network.aruba_config:
+            parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+            lines:
+              - "port-security address-limit 2 learn-mode static action send-disable"
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Case 4: None (admin down; quoted name kept)
+    # ──────────────────────────────────────────────────────────────────────────
+    - name: CASE 4 | None device | Apply config
+      when:
+        - hostvars[inventory_hostname]['ansible_device_type'] == "none"
+        - hostvars[inventory_hostname]['ansible_second_device_type'] == "none"
+      block:
+        - name: CASE 4 | Apply interface config
+          community.network.aruba_config:
+            parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+            lines:
+              - "name {{ hostvars[inventory_hostname]['interface_description'] | quote }}"
+              - "speed-duplex auto"
+              - "disable"
+
+        - name: CASE 4 | Port security
+          community.network.aruba_config:
+            parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
+            lines:
+              - "port-security address-limit 1 learn-mode static action send-disable"
+
+    - name: Save configuration
+      community.network.aruba_config:
+        lines:
+          - "write memory"
