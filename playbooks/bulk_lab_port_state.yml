@@ -1,0 +1,133 @@
+---
+# Play 1: Resolve lab → expand to a flat list of interfaces
+- name: Resolve lab → interface list
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - vars/lab_interfaces_mapping.yml
+
+  vars:
+    # Normalize lab key to support both lab_37 and lab-37
+    _lab_key_1: "{{ lab_name }}"
+    _lab_key_2: "{{ lab_name | replace('-', '_') }}"
+    _lab_key_3: "{{ lab_name | replace('_', '-') }}"
+
+  tasks:
+    - name: Pick the first matching key in lab_interfaces_mapping
+      set_fact:
+        lab_entry: >-
+          {{
+            lab_interfaces_mapping.get(_lab_key_1) |
+            default(lab_interfaces_mapping.get(_lab_key_2)) |
+            default(lab_interfaces_mapping.get(_lab_key_3))
+          }}
+
+    - name: Fail if lab name not found in mapping
+      fail:
+        msg: "Lab '{{ lab_name }}' not found in vars/lab_interfaces_mapping.yml"
+      when: lab_entry is not defined
+
+    - name: Canonicalize lab_entry to a list (in case it was a string)
+      set_fact:
+        lab_raw_list: "{{ [lab_entry] if (lab_entry is string) else lab_entry }}"
+
+    - name: Initialize accumulation list
+      set_fact:
+        interfaces_expanded: []
+
+    # Expand each token:
+    # - If token contains a comma string like "2/10 , 2/11", split and trim.
+    # - If token is a simple port like "2/7", append it.
+    # - If token is a range like "2/4-2/6" (same prefix before last '/'), expand numerically.
+    - name: Expand lab interface tokens into a flat list
+      set_fact:
+        interfaces_expanded: >-
+          {{
+            (interfaces_expanded | default([])) + (
+              (
+                # Case A: token has commas (e.g. "2/10 , 2/11")
+                (item | string) is search(',')
+              )
+              |
+              ternary(
+                # Split by comma and trim
+                ((item | string).split(',') | map('trim') | list),
+                (
+                  # Case B: token is a range "2/4-2/6"
+                  ((item | string) is search('-'))
+                  |
+                  ternary(
+                    (
+                      # Build range with same base before last '/'
+                      (
+                        range(
+                          (((item.split('-')[0] | trim).rsplit('/',1)[1]) | int),
+                          (((item.split('-')[1] | trim).rsplit('/',1)[1]) | int) + 1
+                        )
+                        | list
+                      )
+                      | map('string')
+                      | map('regex_replace', '^(.*)$', ((item.split('-')[0] | trim).rsplit('/',1)[0]) ~ '/\\1')
+                      | list
+                    ),
+                    # Case C: single port like "2/7"
+                    [ (item | string) | trim ]
+                  )
+                )
+              )
+            )
+          }}
+      loop: "{{ lab_raw_list }}"
+
+    - name: Deduplicate and clean blanks
+      set_fact:
+        lab_interfaces: "{{ interfaces_expanded | reject('equalto','') | unique | list }}"
+
+    - name: Fail if list is empty after parsing
+      fail:
+        msg: "No interfaces parsed for lab '{{ lab_name }}'. Check your mapping syntax."
+      when: lab_interfaces | length == 0
+
+    - name: Validate action (enable|disable)
+      assert:
+        that:
+          - action in ['enable', 'disable']
+        fail_msg: "Invalid action '{{ action }}'. Use 'enable' or 'disable'."
+
+    - name: Add target switch dynamically (requires switch_name to exist in inventory)
+      add_host:
+        name: "{{ switch_name }}"
+        groups: lab_switch
+        # Pass computed vars to the host for Play 2
+        lab_interfaces: "{{ lab_interfaces }}"
+        lab_action: "{{ action }}"
+
+# Play 2: Apply enable/disable on each interface of the lab
+- name: Apply bulk interface state on ArubaOS-Switch
+  hosts: lab_switch
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: community.network.aruba
+  collections:
+    - community.network
+
+  tasks:
+    - name: Show what will be changed
+      debug:
+        msg:
+          - "Switch: {{ inventory_hostname }}"
+          - "Action: {{ lab_action }}"
+          - "Interfaces: {{ lab_interfaces | join(', ') }}"
+
+    - name: Enable/Disable each lab interface
+      community.network.aruba_config:
+        parents: "interface {{ item }}"
+        lines:
+          - "{{ lab_action }}"
+      loop: "{{ lab_interfaces }}"
+
+    - name: Save configuration
+      community.network.aruba_command:
+        commands:
+          - "write memory"
