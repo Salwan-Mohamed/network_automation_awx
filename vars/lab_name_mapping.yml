@@ -2,6 +2,6 @@
 # Accepts either hyphens or underscores in your inputs (playbook normalizes).
 lab_name_mapping:
   n-g-36: lab_55
-  n_1_37: lab_37
+  n-1-37: lab_37
   roomAG5: lab_38
   roomA120: lab_39
