@@ -7,6 +7,8 @@
     - ../vars/interface_name.yml
     - ../vars/vlan_mapping.yml
     - ../vars/wall_point_mapping.yml
+  collections:
+    - arubanetworks.aos_switch
 
   tasks:
     - name: Find Switch for Given Room
@@ -54,6 +56,8 @@
   vars_files:
     - ../vars/vlan_mapping.yml
   connection: network_cli
+  collections:
+    - arubanetworks.aos_switch
   
   tasks:
     - name: Debug switch information
@@ -66,7 +70,7 @@
           - "Second Device Type: {{ hostvars[inventory_hostname]['ansible_second_device_type'] }}"
 
     - name: Reset the interface to default configuration
-      arubaoss_config:
+      arubanetworks.aos_switch.arubaoss_config:
         lines:
           - "no interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
           - "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
@@ -75,7 +79,7 @@
       when: hostvars[inventory_hostname]['ansible_device_type'] == "phone"
       block:
         - name: Configure phone interface settings
-          arubaoss_config:
+          arubanetworks.aos_switch.arubaoss_config:
             lines:
               - "name {{ hostvars[inventory_hostname]['interface_description'] }}"
               - "tagged vlan {{ vlan_mapping.phone }}"
@@ -84,7 +88,7 @@
             parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
         
         - name: Configure port security for phone
-          arubaoss_config:
+          arubanetworks.aos_switch.arubaoss_config:
             lines:
               - "port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 1 learn-mode static action send-disable"
 
@@ -95,7 +99,7 @@
         - hostvars[inventory_hostname]['ansible_second_device_type'] == "none"
       block:
         - name: Configure non-phone device interface settings
-          arubaoss_config:
+          arubanetworks.aos_switch.arubaoss_config:
             lines:
               - "name {{ hostvars[inventory_hostname]['interface_description'] }}"
               - "untagged vlan {{ vlan_mapping[hostvars[inventory_hostname]['ansible_device_type']] }}"
@@ -104,7 +108,7 @@
             parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
         
         - name: Configure port security for non-phone device
-          arubaoss_config:
+          arubanetworks.aos_switch.arubaoss_config:
             lines:
               - "port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 1 learn-mode static action send-disable"
 
@@ -113,7 +117,7 @@
         - hostvars[inventory_hostname]['ansible_second_device_type'] == "phone"
       block:
         - name: Configure device with phone interface settings
-          arubaoss_config:
+          arubanetworks.aos_switch.arubaoss_config:
             lines:
               - "name {{ hostvars[inventory_hostname]['interface_description'] }}"
               - "untagged vlan {{ vlan_mapping[hostvars[inventory_hostname]['ansible_device_type']] }}"
@@ -123,7 +127,7 @@
             parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
         
         - name: Configure port security for device with phone
-          arubaoss_config:
+          arubanetworks.aos_switch.arubaoss_config:
             lines:
               - "port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 2 learn-mode static action send-disable"
 
@@ -133,7 +137,7 @@
         - hostvars[inventory_hostname]['ansible_second_device_type'] == "none"
       block:
         - name: Configure none device interface settings
-          arubaoss_config:
+          arubanetworks.aos_switch.arubaoss_config:
             lines:
               - "name {{ hostvars[inventory_hostname]['interface_description'] }}"
               - "speed-duplex auto"
@@ -141,11 +145,11 @@
             parents: "interface {{ hostvars[inventory_hostname]['ansible_port_number'] }}"
         
         - name: Configure port security for none device
-          arubaoss_config:
+          arubanetworks.aos_switch.arubaoss_config:
             lines:
               - "port-security {{ hostvars[inventory_hostname]['ansible_port_number'] }} address-limit 1 learn-mode static action send-disable"
 
     - name: Save configuration
-      arubaoss_config:
+      community.network.aruba_config:
         lines:
           - "write memory"
