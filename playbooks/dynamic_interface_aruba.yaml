@@ -63,7 +63,7 @@
         interface_description: "{{ interface_description }}"
         ansible_device_type: "{{ device_type | default('none') }}"
         ansible_second_device_type: "{{ second_device_type | default('none') }}"
-        # If inventory lacks 'switch_name' with an IP, also set:
+        # If your inventory does NOT already contain the host/IP for switch_name, also set:
         # ansible_host: "{{ switch_ip_mapping[switch_name] }}"
 
 # Play 2: Configure the ArubaOS-Switch interface
@@ -95,15 +95,19 @@
     ###########################################################################
     # CASE 1: Phone only (tagged = phone VLAN)
     ###########################################################################
-    - name: CASE 1 | Read current interface config
+    - name: CASE 1 | Phone-only | Read current interface config
       ansible.netcommon.cli_command:
         command: "show running-config interface {{ ansible_port_number }}"
       register: c1_iface_cfg
       when: ansible_device_type == "phone"
 
-    - name: CASE 1 | Parse existing VLAN membership
+    - name: CASE 1 | Extract interface text
       set_fact:
         c1_text: "{{ (c1_iface_cfg.stdout | default('')) | lower }}"
+      when: ansible_device_type == "phone"
+
+    - name: CASE 1 | Parse existing VLAN membership
+      set_fact:
         c1_old_untagged: "{{ c1_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
         c1_old_tagged:   "{{ c1_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
         c1_desired_untagged: []
@@ -157,7 +161,7 @@
     ###########################################################################
     # CASE 2: Non-phone device only (untagged = device VLAN)
     ###########################################################################
-    - name: CASE 2 | Read current interface config
+    - name: CASE 2 | Non-phone | Read current interface config
       ansible.netcommon.cli_command:
         command: "show running-config interface {{ ansible_port_number }}"
       register: c2_iface_cfg
@@ -166,9 +170,16 @@
         - ansible_device_type != "none"
         - ansible_second_device_type == "none"
 
-    - name: CASE 2 | Parse existing VLAN membership
+    - name: CASE 2 | Extract interface text
       set_fact:
         c2_text: "{{ (c2_iface_cfg.stdout | default('')) | lower }}"
+      when:
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
+
+    - name: CASE 2 | Parse existing VLAN membership
+      set_fact:
         c2_old_untagged: "{{ c2_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
         c2_old_tagged:   "{{ c2_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
         c2_desired_untagged: ["{{ vlan_mapping[ansible_device_type] | string }}"]
