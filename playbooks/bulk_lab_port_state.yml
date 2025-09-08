@@ -4,14 +4,8 @@
   hosts: localhost
   gather_facts: false
 
-  # We will load the three vars files with path fallbacks to avoid "undefined" issues.
-  # Expected content:
-  # - switch_mapping.yml:          switch_mapping: { aruba_N11: ["room1","room2"], ... }
-  # - lab_name_mapping.yml:        lab_name_mapping: { roomA: lab_37, roomB: lab_38, ... }
-  # - lab_interfaces_mapping.yml:  lab_interfaces_mapping: { lab_37: ["2/4-2/6"], ... }
-
   tasks:
-    # --- Load switch_mapping.yml from common locations ---
+    # --- Load switch_mapping.yml ---
     - name: Load switch_mapping (vars/switch_mapping.yml)
       include_vars:
         file: vars/switch_mapping.yml
@@ -38,10 +32,10 @@
 
     - name: Fail if switch_mapping not loaded
       fail:
-        msg: "Could not load 'switch_mapping'. Ensure one of: vars/switch_mapping.yml, ../vars/switch_mapping.yml, or switch_mapping.yml exists and defines 'switch_mapping: {...}'."
+        msg: "Could not load 'switch_mapping'. Ensure vars/switch_mapping.yml (or ../vars/…, ./) defines 'switch_mapping: {...}'."
       when: switch_mapping is not defined
 
-    # --- Load lab_name_mapping.yml from common locations ---
+    # --- Load lab_name_mapping.yml ---
     - name: Load lab_name_mapping (vars/lab_name_mapping.yml)
       include_vars:
         file: vars/lab_name_mapping.yml
@@ -68,10 +62,10 @@
 
     - name: Fail if lab_name_mapping not loaded
       fail:
-        msg: "Could not load 'lab_name_mapping'. Ensure one of: vars/lab_name_mapping.yml, ../vars/lab_name_mapping.yml, or lab_name_mapping.yml exists and defines 'lab_name_mapping: {...}'."
+        msg: "Could not load 'lab_name_mapping'. Ensure vars/lab_name_mapping.yml (or ../vars/…, ./) defines 'lab_name_mapping: {...}'."
       when: lab_name_mapping is not defined
 
-    # --- Load lab_interfaces_mapping.yml from common locations ---
+    # --- Load lab_interfaces_mapping.yml ---
     - name: Load lab_interfaces_mapping (vars/lab_interfaces_mapping.yml)
       include_vars:
         file: vars/lab_interfaces_mapping.yml
@@ -98,11 +92,10 @@
 
     - name: Fail if lab_interfaces_mapping not loaded
       fail:
-        msg: "Could not load 'lab_interfaces_mapping'. Ensure one of: vars/lab_interfaces_mapping.yml, ../vars/lab_interfaces_mapping.yml, or lab_interfaces_mapping.yml exists and defines 'lab_interfaces_mapping: {...}'."
+        msg: "Could not load 'lab_interfaces_mapping'. Ensure vars/lab_interfaces_mapping.yml (or ../vars/…, ./) defines 'lab_interfaces_mapping: {...}'."
       when: lab_interfaces_mapping is not defined
 
-    # --- Normalize desired port state ---
-    # Prefer 'port_state' (enable|disable). If user only provided 'action', use that.
+    # Normalize desired port state (prefer 'port_state'; accept 'action' for compatibility)
     - name: Determine effective port_state
       set_fact:
         port_state_effective: "{{ port_state | default(action | default('')) }}"
@@ -113,7 +106,7 @@
           - "port_state_effective in ['enable', 'disable']"
         fail_msg: "Invalid port state '{{ port_state_effective }}'. Use 'enable' or 'disable'."
 
-    # --- Locate switch for input 'room' (case-insensitive) ---
+    # Find switch hosting the room
     - name: Locate switch for given room
       set_fact:
         switch_name: "{{ item.key }}"
@@ -128,7 +121,7 @@
         msg: "Room '{{ room }}' not found in switch_mapping."
       when: switch_name is not defined
 
-    # --- Resolve lab name from room ---
+    # Resolve lab name from room (case/underscore/hyphen tolerant)
     - name: Build case-insensitive room→lab map
       set_fact:
         lab_name_mapping_ci: "{{ lab_name_mapping_ci | default({}) | combine({ (item.key | lower): item.value }) }}"
@@ -149,7 +142,7 @@
         msg: "Room '{{ room }}' not mapped to a lab in lab_name_mapping."
       when: resolved_lab_name is not defined
 
-    # --- Resolve lab → interface tokens and expand ranges ---
+    # Fetch tokens for this lab (supports variants with -/_)
     - name: Normalize lab key variants
       set_fact:
         _lab_key_1: "{{ resolved_lab_name }}"
@@ -170,52 +163,48 @@
         msg: "Lab '{{ resolved_lab_name }}' not found in lab_interfaces_mapping."
       when: lab_entry is not defined
 
+    # Canonicalize to a list of tokens
     - name: Canonicalize tokens to list
       set_fact:
         lab_raw_list: "{{ [lab_entry] if (lab_entry is string) else lab_entry }}"
 
-    - name: Init expanded list
+    # Clean expansion pipeline (no regex backrefs)
+    - name: Init accumulator
       set_fact:
         interfaces_expanded: []
 
-    # Supports:
-    # - "2/4-2/6" → ["2/4","2/5","2/6"]
-    # - "2/10 , 2/11" → ["2/10","2/11"]
-    # - "2/7" → ["2/7"]
-    - name: Expand tokens into a flat interface list
+    # 1) Add comma-separated tokens (e.g., "2/10 , 2/11")
+    - name: Expand comma tokens
       set_fact:
-        interfaces_expanded: >-
-          {{
-            (interfaces_expanded | default([])) + (
-              (
-                (item | string) is search(',')
-              )
-              |
-              ternary(
-                ((item | string).split(',') | map('trim') | list),
-                (
-                  ((item | string) is search('-'))
-                  |
-                  ternary(
-                    (
-                      range(
-                        (((item.split('-')[0] | trim).rsplit('/',1)[1]) | int),
-                        (((item.split('-')[1] | trim).rsplit('/',1)[1]) | int) + 1
-                      )
-                      | list
-                    )
-                    | map('string')
-                    | map('regex_replace', '^(.*)$', ((item.split('-')[0] | trim).rsplit('/',1)[0]) ~ '/\\1')
-                    | list
-                  ,
-                    [ (item | string) | trim ]
-                  )
-                )
-              )
-            )
-          }}
+        interfaces_expanded: "{{ interfaces_expanded + ((item | string).split(',') | map('trim') | list) }}"
       loop: "{{ lab_raw_list }}"
+      when: "(item | string) is search(',')"
 
+    # 2) Add range tokens (e.g., "2/8-2/29")
+    - name: Expand range tokens to per-port strings
+      vars:
+        _base: "{{ (item.split('-')[0] | trim).rsplit('/',1)[0] }}"
+        _start: "{{ ((item.split('-')[0] | trim).rsplit('/',1)[1]) | int }}"
+        _end: "{{ ((item.split('-')[1] | trim).rsplit('/',1)[1]) | int }}"
+        _range_list: "{{ range(_start, _end + 1) | list }}"
+        _ports: "{{ _range_list | map('string') | map('regex_replace', '^', _base ~ '/') | list }}"
+      set_fact:
+        interfaces_expanded: "{{ interfaces_expanded + _ports }}"
+      loop: "{{ lab_raw_list }}"
+      when:
+        - "(item | string) is search('-')"
+        - "(item | string) is not search(',')"   # avoid double-processing mixed tokens
+
+    # 3) Add single port tokens (e.g., "2/7")
+    - name: Add single port tokens
+      set_fact:
+        interfaces_expanded: "{{ interfaces_expanded + [ (item | string) | trim ] }}"
+      loop: "{{ lab_raw_list }}"
+      when:
+        - "(item | string) is not search(',')"
+        - "(item | string) is not search('-')"
+
+    # Finalize list
     - name: Deduplicate and clean blanks
       set_fact:
         lab_interfaces: "{{ interfaces_expanded | reject('equalto','') | unique | list }}"
@@ -225,7 +214,7 @@
         msg: "No interfaces parsed for lab '{{ resolved_lab_name }}'. Check lab_interfaces_mapping."
       when: lab_interfaces | length == 0
 
-    # Hand off to Play 2 with all computed context
+    # Pass to Play 2
     - name: Add resolved switch as target host
       add_host:
         name: "{{ switch_name }}"
