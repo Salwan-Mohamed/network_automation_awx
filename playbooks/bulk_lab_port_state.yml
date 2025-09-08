@@ -3,13 +3,117 @@
 - name: Resolve switch & lab & interfaces
   hosts: localhost
   gather_facts: false
-  vars_files:
-    - vars/switch_mapping.yml            # switch_mapping: { switch: [rooms...] }
-    - vars/lab_name_mapping.yml          # lab_name_mapping: { room: lab_key }
-    - vars/lab_interfaces_mapping.yml    # lab_interfaces_mapping: { lab_key: [ports or ranges] }
+
+  # We will load the three vars files with path fallbacks to avoid "undefined" issues.
+  # Expected content:
+  # - switch_mapping.yml:          switch_mapping: { aruba_N11: ["room1","room2"], ... }
+  # - lab_name_mapping.yml:        lab_name_mapping: { roomA: lab_37, roomB: lab_38, ... }
+  # - lab_interfaces_mapping.yml:  lab_interfaces_mapping: { lab_37: ["2/4-2/6"], ... }
 
   tasks:
-    # 1) Find switch by room (case-insensitive)
+    # --- Load switch_mapping.yml from common locations ---
+    - name: Load switch_mapping (vars/switch_mapping.yml)
+      include_vars:
+        file: vars/switch_mapping.yml
+      register: _swvars1
+      failed_when: false
+      ignore_errors: true
+      when: switch_mapping is not defined
+
+    - name: Load switch_mapping (../vars/switch_mapping.yml)
+      include_vars:
+        file: ../vars/switch_mapping.yml
+      register: _swvars2
+      failed_when: false
+      ignore_errors: true
+      when: switch_mapping is not defined
+
+    - name: Load switch_mapping (switch_mapping.yml at cwd)
+      include_vars:
+        file: switch_mapping.yml
+      register: _swvars3
+      failed_when: false
+      ignore_errors: true
+      when: switch_mapping is not defined
+
+    - name: Fail if switch_mapping not loaded
+      fail:
+        msg: "Could not load 'switch_mapping'. Ensure one of: vars/switch_mapping.yml, ../vars/switch_mapping.yml, or switch_mapping.yml exists and defines 'switch_mapping: {...}'."
+      when: switch_mapping is not defined
+
+    # --- Load lab_name_mapping.yml from common locations ---
+    - name: Load lab_name_mapping (vars/lab_name_mapping.yml)
+      include_vars:
+        file: vars/lab_name_mapping.yml
+      register: _lnm1
+      failed_when: false
+      ignore_errors: true
+      when: lab_name_mapping is not defined
+
+    - name: Load lab_name_mapping (../vars/lab_name_mapping.yml)
+      include_vars:
+        file: ../vars/lab_name_mapping.yml
+      register: _lnm2
+      failed_when: false
+      ignore_errors: true
+      when: lab_name_mapping is not defined
+
+    - name: Load lab_name_mapping (lab_name_mapping.yml at cwd)
+      include_vars:
+        file: lab_name_mapping.yml
+      register: _lnm3
+      failed_when: false
+      ignore_errors: true
+      when: lab_name_mapping is not defined
+
+    - name: Fail if lab_name_mapping not loaded
+      fail:
+        msg: "Could not load 'lab_name_mapping'. Ensure one of: vars/lab_name_mapping.yml, ../vars/lab_name_mapping.yml, or lab_name_mapping.yml exists and defines 'lab_name_mapping: {...}'."
+      when: lab_name_mapping is not defined
+
+    # --- Load lab_interfaces_mapping.yml from common locations ---
+    - name: Load lab_interfaces_mapping (vars/lab_interfaces_mapping.yml)
+      include_vars:
+        file: vars/lab_interfaces_mapping.yml
+      register: _lim1
+      failed_when: false
+      ignore_errors: true
+      when: lab_interfaces_mapping is not defined
+
+    - name: Load lab_interfaces_mapping (../vars/lab_interfaces_mapping.yml)
+      include_vars:
+        file: ../vars/lab_interfaces_mapping.yml
+      register: _lim2
+      failed_when: false
+      ignore_errors: true
+      when: lab_interfaces_mapping is not defined
+
+    - name: Load lab_interfaces_mapping (lab_interfaces_mapping.yml at cwd)
+      include_vars:
+        file: lab_interfaces_mapping.yml
+      register: _lim3
+      failed_when: false
+      ignore_errors: true
+      when: lab_interfaces_mapping is not defined
+
+    - name: Fail if lab_interfaces_mapping not loaded
+      fail:
+        msg: "Could not load 'lab_interfaces_mapping'. Ensure one of: vars/lab_interfaces_mapping.yml, ../vars/lab_interfaces_mapping.yml, or lab_interfaces_mapping.yml exists and defines 'lab_interfaces_mapping: {...}'."
+      when: lab_interfaces_mapping is not defined
+
+    # --- Normalize desired port state ---
+    # Prefer 'port_state' (enable|disable). If user only provided 'action', use that.
+    - name: Determine effective port_state
+      set_fact:
+        port_state_effective: "{{ port_state | default(action | default('')) }}"
+
+    - name: Validate port_state (enable|disable)
+      assert:
+        that:
+          - "port_state_effective in ['enable', 'disable']"
+        fail_msg: "Invalid port state '{{ port_state_effective }}'. Use 'enable' or 'disable'."
+
+    # --- Locate switch for input 'room' (case-insensitive) ---
     - name: Locate switch for given room
       set_fact:
         switch_name: "{{ item.key }}"
@@ -21,17 +125,16 @@
 
     - name: Fail if no switch matches the room
       fail:
-        msg: "Room '{{ room }}' not found in vars/switch_mapping.yml"
+        msg: "Room '{{ room }}' not found in switch_mapping."
       when: switch_name is not defined
 
-    # 2) Build a case-insensitive map for room → lab
-    - name: Build case-insensitive lab_name mapping
+    # --- Resolve lab name from room ---
+    - name: Build case-insensitive room→lab map
       set_fact:
         lab_name_mapping_ci: "{{ lab_name_mapping_ci | default({}) | combine({ (item.key | lower): item.value }) }}"
       loop: "{{ lab_name_mapping | dict2items }}"
 
-    # Resolve lab name with exact, hyphen/underscore, then case-insensitive match
-    - name: Resolve lab name from room
+    - name: Resolve lab name for this room
       set_fact:
         resolved_lab_name: >-
           {{
@@ -41,19 +144,19 @@
             | default(lab_name_mapping_ci[room | lower] | default(omit))
           }}
 
-    - name: Fail if lab name not found for this room
+    - name: Fail if lab name not found for room
       fail:
-        msg: "Room '{{ room }}' not mapped to a lab in vars/lab_name_mapping.yml"
+        msg: "Room '{{ room }}' not mapped to a lab in lab_name_mapping."
       when: resolved_lab_name is not defined
 
-    # 3) Resolve lab → interface tokens
+    # --- Resolve lab → interface tokens and expand ranges ---
     - name: Normalize lab key variants
       set_fact:
         _lab_key_1: "{{ resolved_lab_name }}"
         _lab_key_2: "{{ resolved_lab_name | replace('-', '_') }}"
         _lab_key_3: "{{ resolved_lab_name | replace('_', '-') }}"
 
-    - name: Get lab interface tokens
+    - name: Fetch lab interface tokens
       set_fact:
         lab_entry: >-
           {{
@@ -64,7 +167,7 @@
 
     - name: Fail if lab key not found in lab_interfaces_mapping
       fail:
-        msg: "Lab '{{ resolved_lab_name }}' not found in vars/lab_interfaces_mapping.yml"
+        msg: "Lab '{{ resolved_lab_name }}' not found in lab_interfaces_mapping."
       when: lab_entry is not defined
 
     - name: Canonicalize tokens to list
@@ -75,7 +178,7 @@
       set_fact:
         interfaces_expanded: []
 
-    # Expand:
+    # Supports:
     # - "2/4-2/6" → ["2/4","2/5","2/6"]
     # - "2/10 , 2/11" → ["2/10","2/11"]
     # - "2/7" → ["2/7"]
@@ -119,23 +222,16 @@
 
     - name: Ensure we have interfaces
       fail:
-        msg: "No interfaces parsed for lab '{{ resolved_lab_name }}'. Check vars/lab_interfaces_mapping.yml"
+        msg: "No interfaces parsed for lab '{{ resolved_lab_name }}'. Check lab_interfaces_mapping."
       when: lab_interfaces | length == 0
 
-    # ✅ YAML-safe assert (block list + quoted expression)
-    - name: Validate action (enable|disable)
-      assert:
-        that:
-          - "action in ['enable', 'disable']"
-        fail_msg: "Invalid action '{{ action }}'. Use 'enable' or 'disable'."
-
-    # Hand off to Play 2
+    # Hand off to Play 2 with all computed context
     - name: Add resolved switch as target host
       add_host:
         name: "{{ switch_name }}"
         groups: lab_switch
         lab_interfaces: "{{ lab_interfaces }}"
-        lab_action: "{{ action }}"
+        lab_port_state: "{{ port_state_effective }}"
         resolved_lab_name: "{{ resolved_lab_name }}"
 
 # Play 2: Apply enable/disable on each interface of the resolved switch
@@ -154,14 +250,14 @@
         msg:
           - "Switch: {{ inventory_hostname }}"
           - "Lab: {{ resolved_lab_name }}"
-          - "Action: {{ lab_action }}"
+          - "State: {{ lab_port_state }}"
           - "Interfaces: {{ lab_interfaces | join(', ') }}"
 
-    - name: Apply {{ lab_action }} on each lab interface
+    - name: Apply {{ lab_port_state }} on each lab interface
       community.network.aruba_config:
         parents: "interface {{ item }}"
         lines:
-          - "{{ lab_action }}"
+          - "{{ lab_port_state }}"
       loop: "{{ lab_interfaces }}"
 
     - name: Save configuration
