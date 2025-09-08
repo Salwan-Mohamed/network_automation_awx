@@ -63,7 +63,7 @@
         interface_description: "{{ interface_description }}"
         ansible_device_type: "{{ device_type | default('none') }}"
         ansible_second_device_type: "{{ second_device_type | default('none') }}"
-        # If your inventory does NOT already contain the host/IP for switch_name, also set:
+        # If your inventory does NOT already contain switch_name with an IP, also set:
         # ansible_host: "{{ switch_ip_mapping[switch_name] }}"
 
 # Play 2: Configure the ArubaOS-Switch interface
@@ -126,36 +126,42 @@
              else (c1_old_tagged | map('string') | list) | difference(c1_desired_tagged) }}
       when: ansible_device_type == "phone"
 
-    - name: CASE 1 | Remove old VLANs (single config block)
+    - name: CASE 1 | Remove old UNTAGGED VLAN(s)
       ansible.netcommon.cli_config:
-        config: |
-          interface {{ ansible_port_number }}
-          {% for v in c1_remove_untagged | default([]) %}
-            no untagged vlan {{ v }}
-          {% endfor %}
-          {% for v in c1_remove_tagged | default([]) %}
-            no tagged vlan {{ v }}
-          {% endfor %}
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "no untagged vlan {{ item }}"
+      loop: "{{ c1_remove_untagged | default([]) }}"
       when:
         - ansible_device_type == "phone"
-        - ((c1_remove_untagged | default([])) | length > 0) or ((c1_remove_tagged | default([])) | length > 0)
+        - (c1_remove_untagged | default([])) | length > 0
+
+    - name: CASE 1 | Remove old TAGGED VLAN(s)
+      ansible.netcommon.cli_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "no tagged vlan {{ item }}"
+      loop: "{{ c1_remove_tagged | default([]) }}"
+      when:
+        - ansible_device_type == "phone"
+        - (c1_remove_tagged | default([])) | length > 0
 
     - name: CASE 1 | Apply phone-only interface config
       ansible.netcommon.cli_config:
-        config: |
-          interface {{ ansible_port_number }}
-            name {{ interface_description | quote }}
-            tagged vlan {{ vlan_mapping.phone }}
-            speed-duplex auto
-            enable
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "name {{ interface_description | quote }}"
+          - "tagged vlan {{ vlan_mapping.phone }}"
+          - "speed-duplex auto"
+          - "enable"
       when: ansible_device_type == "phone"
 
     - name: CASE 1 | Port security (GLOBAL config, not under interface)
       ansible.netcommon.cli_config:
-        config: |
-          port-security learn-mode static {{ ansible_port_number }}
-          port-security address-limit 1 {{ ansible_port_number }}
-          port-security action send-disable {{ ansible_port_number }}
+        lines:
+          - "port-security learn-mode static {{ ansible_port_number }}"
+          - "port-security address-limit 1 {{ ansible_port_number }}"
+          - "port-security action send-disable {{ ansible_port_number }}"
       when: ansible_device_type == "phone"
 
     ###########################################################################
@@ -204,30 +210,38 @@
         - ansible_device_type != "none"
         - ansible_second_device_type == "none"
 
-    - name: CASE 2 | Remove old VLANs (single config block)
+    - name: CASE 2 | Remove old UNTAGGED VLAN(s)
       ansible.netcommon.cli_config:
-        config: |
-          interface {{ ansible_port_number }}
-          {% for v in c2_remove_untagged | default([]) %}
-            no untagged vlan {{ v }}
-          {% endfor %}
-          {% for v in c2_remove_tagged | default([]) %}
-            no tagged vlan {{ v }}
-          {% endfor %}
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "no untagged vlan {{ item }}"
+      loop: "{{ c2_remove_untagged | default([]) }}"
       when:
+        - (c2_remove_untagged | default([])) | length > 0
         - ansible_device_type != "phone"
         - ansible_device_type != "none"
         - ansible_second_device_type == "none"
-        - ((c2_remove_untagged | default([])) | length > 0) or ((c2_remove_tagged | default([])) | length > 0)
+
+    - name: CASE 2 | Remove old TAGGED VLAN(s)
+      ansible.netcommon.cli_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "no tagged vlan {{ item }}"
+      loop: "{{ c2_remove_tagged | default([]) }}"
+      when:
+        - (c2_remove_tagged | default([])) | length > 0
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
 
     - name: CASE 2 | Apply non-phone interface config
       ansible.netcommon.cli_config:
-        config: |
-          interface {{ ansible_port_number }}
-            name {{ interface_description | quote }}
-            untagged vlan {{ vlan_mapping[ansible_device_type] }}
-            speed-duplex auto
-            enable
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "name {{ interface_description | quote }}"
+          - "untagged vlan {{ vlan_mapping[ansible_device_type] }}"
+          - "speed-duplex auto"
+          - "enable"
       when:
         - ansible_device_type != "phone"
         - ansible_device_type != "none"
@@ -235,10 +249,10 @@
 
     - name: CASE 2 | Port security (GLOBAL config, not under interface)
       ansible.netcommon.cli_config:
-        config: |
-          port-security learn-mode static {{ ansible_port_number }}
-          port-security address-limit 1 {{ ansible_port_number }}
-          port-security action send-disable {{ ansible_port_number }}
+        lines:
+          - "port-security learn-mode static {{ ansible_port_number }}"
+          - "port-security address-limit 1 {{ ansible_port_number }}"
+          - "port-security action send-disable {{ ansible_port_number }}"
       when:
         - ansible_device_type != "phone"
         - ansible_device_type != "none"
@@ -252,20 +266,20 @@
       block:
         - name: CASE 3 | Apply interface config
           ansible.netcommon.cli_config:
-            config: |
-              interface {{ ansible_port_number }}
-                name {{ interface_description | quote }}
-                untagged vlan {{ vlan_mapping[ansible_device_type] }}
-                tagged vlan {{ vlan_mapping.phone }}
-                speed-duplex auto
-                enable
+            parents: "interface {{ ansible_port_number }}"
+            lines:
+              - "name {{ interface_description | quote }}"
+              - "untagged vlan {{ vlan_mapping[ansible_device_type] }}"
+              - "tagged vlan {{ vlan_mapping.phone }}"
+              - "speed-duplex auto"
+              - "enable"
 
         - name: CASE 3 | Port security (GLOBAL; allow 2)
           ansible.netcommon.cli_config:
-            config: |
-              port-security learn-mode static {{ ansible_port_number }}
-              port-security address-limit 2 {{ ansible_port_number }}
-              port-security action send-disable {{ ansible_port_number }}
+            lines:
+              - "port-security learn-mode static {{ ansible_port_number }}"
+              - "port-security address-limit 2 {{ ansible_port_number }}"
+              - "port-security action send-disable {{ ansible_port_number }}"
 
     ###########################################################################
     # CASE 4: None (admin down)
@@ -277,18 +291,18 @@
       block:
         - name: CASE 4 | Apply interface config
           ansible.netcommon.cli_config:
-            config: |
-              interface {{ ansible_port_number }}
-                name {{ interface_description | quote }}
-                speed-duplex auto
-                disable
+            parents: "interface {{ ansible_port_number }}"
+            lines:
+              - "name {{ interface_description | quote }}"
+              - "speed-duplex auto"
+              - "disable"
 
         - name: CASE 4 | Port security (GLOBAL; keep 1)
           ansible.netcommon.cli_config:
-            config: |
-              port-security learn-mode static {{ ansible_port_number }}
-              port-security address-limit 1 {{ ansible_port_number }}
-              port-security action send-disable {{ ansible_port_number }}
+            lines:
+              - "port-security learn-mode static {{ ansible_port_number }}"
+              - "port-security address-limit 1 {{ ansible_port_number }}"
+              - "port-security action send-disable {{ ansible_port_number }}"
 
     - name: Save configuration
       ansible.netcommon.cli_command:
