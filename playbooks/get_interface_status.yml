@@ -1,0 +1,127 @@
+---
+# Play 1: Resolve the switch from the room and pass target interface(s)
+- name: Resolve switch from room and prepare targets
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - vars/switch_mapping.yml
+
+  vars:
+    # Accept a single interface (string). If you want to pass a list later,
+    # change this to a list and skip the "target_interfaces" build task.
+    port_number: "{{ port_number | default(omit) }}"
+
+  tasks:
+    - name: Ensure we got a room and a port_number
+      assert:
+        that:
+          - room is defined
+          - (room | string) | length > 0
+          - port_number is defined
+          - (port_number | string) | length > 0
+        fail_msg: "Please provide 'room' and 'port_number' (e.g., room: n-g-36, port_number: '1/20')."
+
+    - name: Locate switch for given room (case-insensitive)
+      set_fact:
+        switch_name: "{{ item.key }}"
+      loop: "{{ switch_mapping | dict2items }}"
+      when: (room | lower) in (item.value | map('lower') | list)
+
+    - name: Fail if no switch matches the room
+      fail:
+        msg: "Room '{{ room }}' not found in vars/switch_mapping.yml -> switch_mapping."
+      when: switch_name is not defined
+
+    - name: Build target interface list
+      set_fact:
+        target_interfaces: ["{{ port_number | string }}"]
+
+    - name: Add resolved switch as a host for Play 2
+      add_host:
+        name: "{{ switch_name }}"
+        groups: target_switch
+        target_interfaces: "{{ target_interfaces }}"
+
+# Play 2: Connect to the switch and fetch interface info
+- name: Fetch interface status / enabled / name (ArubaOS-Switch)
+  hosts: target_switch
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: community.network.aruba
+  collections:
+    - community.network
+
+  tasks:
+    - name: Initialize result list
+      set_fact:
+        interfaces_info: []
+
+    # For each interface, get:
+    #  - "show interface X/Y"  → Name (fallback), Link Status, Port Enabled
+    #  - "show running-config interface X/Y" → name "..." (preferred description)
+    - name: Collect for each interface
+      block:
+        - name: SHOW | interface {{ ifp }}
+          community.network.aruba_command:
+            commands:
+              - "show interface {{ ifp }}"
+          register: si
+
+        - name: SHOW | running-config interface {{ ifp }}
+          community.network.aruba_command:
+            commands:
+              - "show running-config interface {{ ifp }}"
+          register: srun
+
+        - name: Parse fields from outputs for {{ ifp }}
+          set_fact:
+            _name_run: >-
+              {{
+                (srun.stdout[0] | regex_findall('name\\s+\\"(.*)\\"')) | first | default('') | trim
+              }}
+            _name_show: >-
+              {{
+                (si.stdout[0] | regex_findall('Name\\s*:\\s*(.*)')) | first | default('') | trim
+              }}
+            _link_status: >-
+              {{
+                (si.stdout[0] | regex_findall('Link\\s+Status\\s*:\\s*(\\w+)')) | first | default('Unknown') | trim
+              }}
+            _port_enabled: >-
+              {{
+                (si.stdout[0] | regex_findall('Port\\s+Enabled\\s*:\\s*(\\w+)')) | first | default('Unknown') | trim
+              }}
+
+        - name: Append structured record for {{ ifp }}
+          set_fact:
+            interfaces_info: >-
+              {{
+                interfaces_info + [ {
+                  'interface': ifp,
+                  'link_status': _link_status,
+                  'port_enabled': _port_enabled,
+                  'name': (_name_run if (_name_run | length) > 0 else _name_show)
+                } ]
+              }}
+      loop: "{{ target_interfaces }}"
+      loop_control:
+        loop_var: ifp
+        label: "{{ ifp }}"
+
+    - name: Summary (per interface)
+      debug:
+        msg: >-
+          Interface {{ item.interface }} |
+          Link Status: {{ item.link_status }} |
+          Port Enabled: {{ item.port_enabled }} |
+          Name: {{ item.name }}
+      loop: "{{ interfaces_info }}"
+      loop_control:
+        label: "{{ item.interface }}"
+
+    # If you want raw JSON for integrations, uncomment the next task:
+    # - name: Raw JSON result
+    #   debug:
+    #     var: interfaces_info
