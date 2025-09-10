@@ -4,15 +4,37 @@
   hosts: localhost
   gather_facts: false
 
-  vars_files:
-    - vars/switch_mapping.yml
-
-  vars:
-    # Accept a single interface (string). If you want to pass a list later,
-    # change this to a list and skip the "target_interfaces" build task.
-    port_number: "{{ port_number | default(omit) }}"
-
+  # Load switch mapping; adjust the paths if your repo layout differs.
   tasks:
+    - name: Load switch_mapping (vars/switch_mapping.yml)
+      include_vars:
+        file: vars/switch_mapping.yml
+      register: _sw1
+      failed_when: false
+      ignore_errors: true
+      when: switch_mapping is not defined
+
+    - name: Load switch_mapping (../vars/switch_mapping.yml)
+      include_vars:
+        file: ../vars/switch_mapping.yml
+      register: _sw2
+      failed_when: false
+      ignore_errors: true
+      when: switch_mapping is not defined
+
+    - name: Load switch_mapping (switch_mapping.yml at cwd)
+      include_vars:
+        file: switch_mapping.yml
+      register: _sw3
+      failed_when: false
+      ignore_errors: true
+      when: switch_mapping is not defined
+
+    - name: Fail if switch_mapping not loaded
+      fail:
+        msg: "Could not load 'switch_mapping'. Ensure it defines 'switch_mapping: { switch: [rooms...] }'."
+      when: switch_mapping is not defined
+
     - name: Ensure we got a room and a port_number
       assert:
         that:
@@ -20,7 +42,7 @@
           - (room | string) | length > 0
           - port_number is defined
           - (port_number | string) | length > 0
-        fail_msg: "Please provide 'room' and 'port_number' (e.g., room: n-g-36, port_number: '1/20')."
+        fail_msg: "Provide 'room' and 'port_number' (e.g., room: n-g-36, port_number: '1/20')."
 
     - name: Locate switch for given room (case-insensitive)
       set_fact:
@@ -30,7 +52,7 @@
 
     - name: Fail if no switch matches the room
       fail:
-        msg: "Room '{{ room }}' not found in vars/switch_mapping.yml -> switch_mapping."
+        msg: "Room '{{ room }}' not found in switch_mapping."
       when: switch_name is not defined
 
     - name: Build target interface list
@@ -58,57 +80,42 @@
       set_fact:
         interfaces_info: []
 
-    # For each interface, get:
-    #  - "show interface X/Y"  → Name (fallback), Link Status, Port Enabled
-    #  - "show running-config interface X/Y" → name "..." (preferred description)
-    - name: Collect for each interface
-      block:
-        - name: SHOW | interface {{ ifp }}
-          community.network.aruba_command:
-            commands:
-              - "show interface {{ ifp }}"
-          register: si
-
-        - name: SHOW | running-config interface {{ ifp }}
-          community.network.aruba_command:
-            commands:
-              - "show running-config interface {{ ifp }}"
-          register: srun
-
-        - name: Parse fields from outputs for {{ ifp }}
-          set_fact:
-            _name_run: >-
-              {{
-                (srun.stdout[0] | regex_findall('name\\s+\\"(.*)\\"')) | first | default('') | trim
-              }}
-            _name_show: >-
-              {{
-                (si.stdout[0] | regex_findall('Name\\s*:\\s*(.*)')) | first | default('') | trim
-              }}
-            _link_status: >-
-              {{
-                (si.stdout[0] | regex_findall('Link\\s+Status\\s*:\\s*(\\w+)')) | first | default('Unknown') | trim
-              }}
-            _port_enabled: >-
-              {{
-                (si.stdout[0] | regex_findall('Port\\s+Enabled\\s*:\\s*(\\w+)')) | first | default('Unknown') | trim
-              }}
-
-        - name: Append structured record for {{ ifp }}
-          set_fact:
-            interfaces_info: >-
-              {{
-                interfaces_info + [ {
-                  'interface': ifp,
-                  'link_status': _link_status,
-                  'port_enabled': _port_enabled,
-                  'name': (_name_run if (_name_run | length) > 0 else _name_show)
-                } ]
-              }}
+    # Run BOTH show commands per interface in a single task (looped by interface).
+    - name: Collect show outputs per interface
+      community.network.aruba_command:
+        commands:
+          - "show interface {{ item }}"
+          - "show running-config interface {{ item }}"
       loop: "{{ target_interfaces }}"
+      register: show_outputs
+
+    # Build structured records from the collected outputs
+    - name: Parse and accumulate results
+      set_fact:
+        interfaces_info: >-
+          {{
+            interfaces_info + [ {
+              'interface': res.item,
+              'link_status': (
+                 (res.stdout[0] | regex_findall('Link\\s+Status\\s*:\\s*(\\w+)') | first)
+                 | default('Unknown')
+                 | trim
+              ),
+              'port_enabled': (
+                 (res.stdout[0] | regex_findall('Port\\s+Enabled\\s*:\\s*(\\w+)') | first)
+                 | default('Unknown')
+                 | trim
+              ),
+              'name': (
+                 ((res.stdout[1] | regex_findall('name\\s+\\"(.*)\\"')) | first | default('') | trim)
+                 | default((res.stdout[0] | regex_findall('Name\\s*:\\s*(.*)') | first | default('')) | trim)
+              )
+            } ]
+          }}
+      loop: "{{ show_outputs.results }}"
       loop_control:
-        loop_var: ifp
-        label: "{{ ifp }}"
+        loop_var: res
+        label: "{{ res.item }}"
 
     - name: Summary (per interface)
       debug:
@@ -121,7 +128,7 @@
       loop_control:
         label: "{{ item.interface }}"
 
-    # If you want raw JSON for integrations, uncomment the next task:
+    # If you prefer raw JSON for an external system, uncomment this:
     # - name: Raw JSON result
     #   debug:
     #     var: interfaces_info
