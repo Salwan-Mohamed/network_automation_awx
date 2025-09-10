@@ -5,4 +5,5 @@ vlan_mapping:
   pc: 80
   projector: 233
   zero_client: 141
+  Podium: 40
   none: disable
