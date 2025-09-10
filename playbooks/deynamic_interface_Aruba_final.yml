@@ -1,46 +1,5 @@
 ---
-################################################################################
-# PLAYBOOK: dynamic_interface.yml  (ArubaOS-Switch, AOS-S)
-#
-# PURPOSE
-# - Resolve a switch and physical port from a room + wall point label.
-# - Configure that interface based on the device type(s) for four cases:
-#     Case 1 : Phone only                 → tagged phone VLAN
-#     Case 2 : Non-phone only             → untagged device VLAN
-#     Case 3 : Non-phone + Phone on port  → untagged device + tagged phone VLAN
-#     Case 4 : None (port disabled)       → admin down
-#
-# HIGHLIGHTS
-# - Actively **cleans old VLAN membership** in Case 1 & 2:
-#   * Strategy A (wipe): remove all existing un/tagged VLANs first
-#   * Strategy B (safe): remove only VLANs not in the desired state
-# - Quotes interface "name" (description) to handle spaces safely.
-# - Runs **port-security in GLOBAL (parent) config**, not under interface.
-# - Uses AOS-S specific modules:
-#     community.network.aruba_config / aruba_command
-#   (These handle CLI context and sub-modes reliably on AOS-S hardware.)
-#
-# INPUTS (pass via AWX Extra Vars, Survey, or CLI -e):
-#   room: "n-g-36"            # must match a key in switch_mapping.yml values
-#   port_number: "2/2"        # exact front-panel label or stack/slot/port string
-#   device_type: "pc"         # e.g. pc | printer | ap | phone | none
-#   second_device_type: "none"  # e.g. phone | none
-#
-# DEPENDENCY VAR FILES (relative to this playbook):
-#   ../vars/switch_mapping.yml       # mapping: switch_name → [rooms...]
-#   ../vars/interface_name.yml       # mapping: room → interface description
-#   ../vars/vlan_mapping.yml         # mapping: device_type → VLAN ID; plus "phone"
-#   ../vars/wall_point_mapping.yml   # mapping: wall point label → actual port
-#
-# INVENTORY
-# - Ensure each switch_name (e.g., aruba_N11) exists in inventory with ansible_host.
-# - If not, you can inject ansible_host via add_host (see commented hint below).
-################################################################################
-
-
-################################################################################
-# PLAY 1: Resolve target switch & physical port
-################################################################################
+# Play 1: Resolve target switch & port + build final interface name
 - name: Resolve Switch Based on Room Number and Convert Wall Point
   hosts: localhost
   gather_facts: false
@@ -51,8 +10,6 @@
     - ../vars/wall_point_mapping.yml
 
   tasks:
-    # Find which switch contains the given room. We loop over mapping items and
-    # pick the one whose value-list (rooms) contains the provided room (case-insensitive).
     - name: Find Switch for Given Room
       set_fact:
         switch_name: "{{ item.key }}"
@@ -62,14 +19,11 @@
         - room | length > 0
         - (room | lower) in (item.value | map('lower') | list)
 
-    # If no switch matched, fail early with a helpful message.
     - name: Fail if No Matching Switch is Found
       fail:
         msg: "No switch found for room {{ room }}. Check switch_mapping.yml"
       when: switch_name is not defined
 
-    # A wall point label (e.g., "WP2B") might map to a real port id ("2/2").
-    # If mapping present, translate it; otherwise we’ll use the provided port_number directly.
     - name: Convert wall point label to actual switch port (if mapping exists)
       set_fact:
         actual_port_number: "{{ wall_point_mapping[port_number] }}"
@@ -84,18 +38,15 @@
         - port_number is defined
         - port_number not in wall_point_mapping
 
-    # Make sure we have a port to work with.
     - name: Fail if Port Number Not Provided
       fail:
         msg: "Port number is required"
       when: actual_port_number is not defined or (actual_port_number | string) == ""
 
-    # Build a human-friendly interface description.
-    # 1) Prefer a predefined name from interface_name.yml keyed by room.
-    # 2) Otherwise, fallback to a generic pattern including room & wall point.
-    - name: Get Interface Description (from table, else fallback)
+    # Base label from table, else fallback
+    - name: Compute base interface label
       set_fact:
-        interface_description: >-
+        interface_base_label: >-
           {{
             interface_descriptions.get(
               room,
@@ -105,52 +56,64 @@
             else 'Port_WP' ~ (port_number | string)
           }}
 
-    # Dynamically add the resolved switch as a host for Play 2 with facts we need.
-    # NOTE: If your inventory doesn't have "switch_name" with an ansible_host/IP,
-    # you can also add "ansible_host: {{ switch_ip_mapping[switch_name] }}" here.
+    # Build device labels from survey inputs (fallback to device_type vars)
+    - name: Build device labels
+      set_fact:
+        device_label_1: "{{ (device_name | default(device_type | default('')) | string) | trim | lower }}"
+        device_label_2: "{{ (second_device_name | default(second_device_type | default('')) | string) | trim | lower }}"
+
+    # Build suffix list once labels exist
+    - name: Build device label suffix list
+      set_fact:
+        device_suffix_list: >-
+          {{
+            ([device_label_1] if device_label_1 not in ['','none'] else [])
+            + ([device_label_2] if device_label_2 not in ['','none'] else [])
+          }}
+
+    - name: Build final interface description with device suffixes
+      set_fact:
+        interface_description_final: >-
+          {{
+            interface_base_label
+          }}{{ '_' ~ (device_suffix_list | join('_')) if (device_suffix_list | length) > 0 else '' }}
+
     - name: Add Resolved Switch to Inventory
       add_host:
         name: "{{ switch_name }}"
         groups: dynamic_switches
         ansible_port_number: "{{ actual_port_number }}"
-        interface_description: "{{ interface_description }}"
+        interface_description: "{{ interface_description_final }}"
         ansible_device_type: "{{ device_type | default('none') }}"
         ansible_second_device_type: "{{ second_device_type | default('none') }}"
+        # ansible_host: "{{ switch_ip_mapping[switch_name] }}"   # <- uncomment if needed
 
-
-################################################################################
-# PLAY 2: Connect to the switch and configure the interface
-################################################################################
+# Play 2: Configure the ArubaOS-Switch interface
 - name: Configure Aruba Switch Port Based on Device Type and Configuration Cases
   hosts: dynamic_switches
   gather_facts: false
-
-  # ArubaOS-Switch over SSH / CLI
   connection: network_cli
-
-  # This ensures the correct Aruba AOS-S driver handles CLI context transitions.
   vars:
     ansible_network_os: community.network.aruba
-
-    # VLAN cleanup strategy for Case 1 & 2:
-    #   wipe : remove all existing un/tagged VLANs on the port, then apply desired
-    #   safe : remove only VLANs not in desired state (keeps already-desired VLANs)
-    cleanup_strategy: wipe     # change to "safe" if you prefer selective cleanup
-
-  # We deliberately use the Aruba collection because it is the most reliable way
-  # to manage AOS-S interface sub-modes without parser slips.
+    cleanup_strategy: wipe    # wipe | safe (applies to Case 1 & 2 VLAN cleanup)
   collections:
     - community.network
-
   vars_files:
     - ../vars/vlan_mapping.yml
 
   tasks:
-    # ────────────────────────────────────────────────────────────────────────
-    # CASE 1: Phone only  → tagged phone VLAN
-    # ────────────────────────────────────────────────────────────────────────
+    - name: Debug (switch/port/input)
+      debug:
+        msg:
+          - "Switch: {{ inventory_hostname }}"
+          - "Port: {{ ansible_port_number }}"
+          - "Interface Final Description: {{ interface_description }}"
+          - "Primary Device Type: {{ ansible_device_type }}"
+          - "Second Device Type: {{ ansible_second_device_type }}"
 
-    # Grab the current running-config for the target interface.
+    ###########################################################################
+    # CASE 1: Phone only (tagged = phone VLAN)
+    ###########################################################################
     - name: CASE 1 | Read current interface config
       community.network.aruba_command:
         commands:
@@ -158,22 +121,19 @@
       register: c1_iface_cmd
       when: ansible_device_type == "phone"
 
-    # Plain text of the interface section (lowercased for easy regex).
     - name: CASE 1 | Extract interface text
       set_fact:
         c1_text: "{{ (c1_iface_cmd.stdout[0] | default('')) | lower }}"
       when: ansible_device_type == "phone"
 
-    # Parse any existing untagged / tagged VLAN IDs so we can remove old state.
     - name: CASE 1 | Parse existing VLAN membership
       set_fact:
         c1_old_untagged: "{{ c1_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
         c1_old_tagged:   "{{ c1_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
-        c1_desired_untagged: []                               # phone-only has no untagged
-        c1_desired_tagged: ["{{ vlan_mapping.phone | string }}"]  # phone VLAN tagged
+        c1_desired_untagged: []
+        c1_desired_tagged: ["{{ vlan_mapping.phone | string }}"]
       when: ansible_device_type == "phone"
 
-    # Build the removal lists according to the chosen cleanup strategy (wipe/safe).
     - name: CASE 1 | Compute removal lists
       set_fact:
         c1_remove_untagged: >-
@@ -186,7 +146,6 @@
              else (c1_old_tagged | map('string') | list) | difference(c1_desired_tagged) }}
       when: ansible_device_type == "phone"
 
-    # Remove leftover UNTAGGED VLANs (if any) in proper interface context.
     - name: CASE 1 | Remove old UNTAGGED VLAN(s)
       community.network.aruba_config:
         parents: "interface {{ ansible_port_number }}"
@@ -197,7 +156,6 @@
         - ansible_device_type == "phone"
         - (c1_remove_untagged | default([])) | length > 0
 
-    # Remove leftover TAGGED VLANs (if any) in proper interface context.
     - name: CASE 1 | Remove old TAGGED VLAN(s)
       community.network.aruba_config:
         parents: "interface {{ ansible_port_number }}"
@@ -208,7 +166,6 @@
         - ansible_device_type == "phone"
         - (c1_remove_tagged | default([])) | length > 0
 
-    # Apply the phone-only config: quoted name, add tagged phone VLAN, enable.
     - name: CASE 1 | Apply phone-only interface config
       community.network.aruba_config:
         parents: "interface {{ ansible_port_number }}"
@@ -219,7 +176,6 @@
           - "enable"
       when: ansible_device_type == "phone"
 
-    # Apply port-security in GLOBAL (parent) configuration mode for this port.
     - name: CASE 1 | Port security (GLOBAL/parent)
       community.network.aruba_config:
         lines:
@@ -228,11 +184,9 @@
           - "port-security {{ ansible_port_number }} action send-disable"
       when: ansible_device_type == "phone"
 
-
-    # ────────────────────────────────────────────────────────────────────────
-    # CASE 2: Non-phone only  → untagged device VLAN
-    # ────────────────────────────────────────────────────────────────────────
-
+    ###########################################################################
+    # CASE 2: Non-phone device only (untagged = device VLAN)
+    ###########################################################################
     - name: CASE 2 | Read current interface config
       community.network.aruba_command:
         commands:
@@ -301,7 +255,6 @@
         - ansible_device_type != "none"
         - ansible_second_device_type == "none"
 
-    # Apply the non-phone config: quoted name, set untagged device VLAN, enable.
     - name: CASE 2 | Apply non-phone interface config
       community.network.aruba_config:
         parents: "interface {{ ansible_port_number }}"
@@ -326,11 +279,9 @@
         - ansible_device_type != "none"
         - ansible_second_device_type == "none"
 
-
-    # ────────────────────────────────────────────────────────────────────────
-    # CASE 3: Non-phone + Phone on same port
-    #         → untagged device VLAN + tagged phone VLAN
-    # ────────────────────────────────────────────────────────────────────────
+    ###########################################################################
+    # CASE 3: Device + Phone (untagged = device VLAN, tagged = phone VLAN)
+    ###########################################################################
     - name: CASE 3 | Device with phone | Apply config
       when: ansible_second_device_type == "phone"
       block:
@@ -344,7 +295,6 @@
               - "speed-duplex auto"
               - "enable"
 
-        # Allow two MACs (device + phone) at global port-security.
         - name: CASE 3 | Port security (GLOBAL/parent; allow 2)
           community.network.aruba_config:
             lines:
@@ -352,20 +302,26 @@
               - "port-security {{ ansible_port_number }} address-limit 2"
               - "port-security {{ ansible_port_number }} action send-disable"
 
-
-    # ────────────────────────────────────────────────────────────────────────
-    # CASE 4: None → port disabled, description kept
-    # ────────────────────────────────────────────────────────────────────────
+    ###########################################################################
+    # CASE 4: None (admin down) + append "_disable" to name
+    ###########################################################################
     - name: CASE 4 | None device | Apply config
       when:
         - ansible_device_type == "none"
         - ansible_second_device_type == "none"
       block:
-        - name: CASE 4 | Apply interface config
+        - name: CASE 4 | Apply interface config (with _disable suffix)
           community.network.aruba_config:
             parents: "interface {{ ansible_port_number }}"
             lines:
-              - "name {{ interface_description | quote }}"
+              - >-
+                name {{
+                  (
+                    interface_description
+                    if (interface_description is search('(_disable)$'))
+                    else (interface_description ~ '_disable')
+                  ) | quote
+                }}
               - "speed-duplex auto"
               - "disable"
 
@@ -376,8 +332,6 @@
               - "port-security {{ ansible_port_number }} address-limit 1"
               - "port-security {{ ansible_port_number }} action send-disable"
 
-
-    # Persist the changes.
     - name: Save configuration
       community.network.aruba_command:
         commands:
