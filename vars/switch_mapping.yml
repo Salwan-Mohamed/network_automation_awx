@@ -1,5 +1,5 @@
 switch_mapping:
-  aruba_N11: ["n-g-36", "n-g-50-1"]
+  aruba_N11: ["n-g-36", "n-g-50-1", "n-g-23"]
   aruba_N12: ["roomAG5", "roomAG10"]
   aruba_N13: ["n-1-37", "n-1-39"]
   aruba_N14: ["roomA150", "roomA160"]
