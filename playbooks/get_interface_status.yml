@@ -106,27 +106,34 @@
       loop: "{{ target_interfaces }}"
       register: show_outputs
 
-    # Parse both outputs and accumulate a clean record
+    # Parse robustly (tolerant to spacing/case); prefer running-config "name ..."
     - name: Parse and accumulate results
+      vars:
+        si_text: "{{ (res.stdout[0] | default('')) | regex_replace('\\r','') }}"
+        sr_text: "{{ (res.stdout[1] | default('')) | regex_replace('\\r','') }}"
+        si_lower: "{{ si_text | lower }}"
       set_fact:
         interfaces_info: >-
           {{
             interfaces_info + [ {
               'interface': res.item,
               'link_status': (
-                 (res.stdout[0] | regex_findall('Link\\s+Status\\s*:\\s*(\\w+)') | first)
-                 | default('Unknown')
-                 | trim
+                 (si_lower | regex_findall('link\\s+status\\s*:\\s*([a-z]+)') | first | default('unknown')) | capitalize
               ),
               'port_enabled': (
-                 (res.stdout[0] | regex_findall('Port\\s+Enabled\\s*:\\s*(\\w+)') | first)
-                 | default('Unknown')
-                 | trim
+                 (si_lower | regex_findall('port\\s+enabled\\s*:\\s*([a-z]+)') | first | default('unknown')) | capitalize
               ),
               'name': (
-                 ((res.stdout[1] | regex_findall('name\\s+\\"(.*)\\"')) | first | default('') | trim)
-                 | default((res.stdout[0] | regex_findall('Name\\s*:\\s*(.*)') | first | default('')) | trim)
-              )
+                 # Prefer the explicit running-config name "..."
+                 (
+                   sr_text | regex_findall('name\\s+\\"\\s*(.*?)\\s*\\"')
+                 ) | first
+                 | default(
+                     # Fallback to the Name: field in "show interface"
+                     (si_text | regex_findall('Name\\s*:\\s*(.+)') | first | default(''))
+                   )
+                 | trim
+               )
             } ]
           }}
       loop: "{{ show_outputs.results }}"
@@ -145,7 +152,7 @@
       loop_control:
         label: "{{ item.interface }}"
 
-    # Optional: emit raw JSON
+    # Optional: emit raw JSON for downstream systems
     # - name: Raw JSON result
     #   debug:
     #     var: interfaces_info
