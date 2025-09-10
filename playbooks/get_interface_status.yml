@@ -1,11 +1,13 @@
 ---
-# Play 1: Resolve the switch from the room and pass target interface(s)
+# Play 1: Resolve the switch from the room and prepare target interface(s)
 - name: Resolve switch from room and prepare targets
   hosts: localhost
   gather_facts: false
 
   tasks:
-    # Load switch_mapping from common locations
+    ##########################################################################
+    # Load mappings (with fallbacks so they always load)
+    ##########################################################################
     - name: Load switch_mapping (vars/switch_mapping.yml)
       include_vars:
         file: vars/switch_mapping.yml
@@ -35,31 +37,80 @@
         msg: "Could not load 'switch_mapping'. Ensure it defines 'switch_mapping: { switch: [rooms...] }'."
       when: switch_mapping is not defined
 
-    # Normalize the incoming interface variable:
-    # prefer 'port_number'; else accept 'port', 'interface', or 'ifname'
-    - name: Determine effective port number
+    # Wall-point mapping is optional; we try to load it from common locations
+    - name: Load wall_point_mapping (optional, vars/wall_point_mapping.yml)
+      include_vars:
+        file: vars/wall_point_mapping.yml
+      register: _wpm1
+      failed_when: false
+      ignore_errors: true
+
+    - name: Load wall_point_mapping (optional, ../vars/wall_point_mapping.yml)
+      include_vars:
+        file: ../vars/wall_point_mapping.yml
+      register: _wpm2
+      failed_when: false
+      ignore_errors: true
+      when: wall_point_mapping is not defined
+
+    - name: Load wall_point_mapping (optional, wall_point_mapping.yml at cwd)
+      include_vars:
+        file: wall_point_mapping.yml
+      register: _wpm3
+      failed_when: false
+      ignore_errors: true
+      when: wall_point_mapping is not defined
+
+    ##########################################################################
+    # Normalize the incoming interface variable to a usable port id
+    # Accept: port_number (preferred), port, interface, ifname
+    ##########################################################################
+    - name: Determine raw port token from survey
       set_fact:
-        port_number_effective: >-
+        _raw_port_token: >-
           {{
             [ port_number | default(''),
               port | default(''),
               interface | default(''),
               ifname | default('') ]
-            | map('string')
-            | map('trim')
-            | reject('equalto','')
-            | list
-            | first
-            | default('')
+            | map('string') | map('trim') | reject('equalto','') | list | first | default('')
           }}
 
-    - name: Ensure we got a room and a port
+    - name: Ensure we got a room and a port token
       assert:
         that:
           - room is defined
           - (room | string) | length > 0
-          - (port_number_effective | string) | length > 0
-        fail_msg: "Provide 'room' and a port (use one of: port_number, port, interface, ifname). Example: room: n-g-36, port_number: '1/20'."
+          - (_raw_port_token | string) | length > 0
+        fail_msg: "Provide 'room' and a port (one of: port_number, port, interface, ifname). Example: room: n-g-36, port_number: '1/20'."
+
+    # Apply wall-point mapping if present
+    - name: Apply wall-point mapping if available
+      set_fact:
+        _mapped_port_token: "{{ wall_point_mapping[_raw_port_token] }}"
+      when:
+        - wall_point_mapping is defined
+        - _raw_port_token in wall_point_mapping
+
+    # Heuristic normalization:
+    # - replace '-' or '_' with '/'
+    # - if still no '/', and token is digits only with length>=2:
+    #   assume first digit = stack/member, rest = port number (int)
+    #   e.g. '120' -> '1/20', '402' -> '4/2'
+    - name: Normalize port token to Aruba interface format
+      vars:
+        tok: "{{ _mapped_port_token | default(_raw_port_token) | trim }}"
+      set_fact:
+        port_number_effective: >-
+          {% set t = tok | regex_replace('\\s+', '') %}
+          {% set t = t | regex_replace('[-_]', '/') %}
+          {% if '/' in t %}
+            {{ t }}
+          {% elif t is match('^\\d{2,}$') %}
+            {{ (t[0]) ~ '/' ~ ((t[1:] | int) | string) }}
+          {% else %}
+            {{ t }}
+          {% endif %}
 
     - name: Locate switch for given room (case-insensitive)
       set_fact:
@@ -106,34 +157,34 @@
       loop: "{{ target_interfaces }}"
       register: show_outputs
 
-    # Parse robustly (tolerant to spacing/case); prefer running-config "name ..."
+    # Parse robustly; if the command output indicates invalid port, mark it so.
     - name: Parse and accumulate results
       vars:
         si_text: "{{ (res.stdout[0] | default('')) | regex_replace('\\r','') }}"
         sr_text: "{{ (res.stdout[1] | default('')) | regex_replace('\\r','') }}"
         si_lower: "{{ si_text | lower }}"
+        invalid: >-
+          {{ 'invalid port' in si_lower or 'module not present' in si_lower }}
       set_fact:
         interfaces_info: >-
           {{
             interfaces_info + [ {
               'interface': res.item,
               'link_status': (
-                 (si_lower | regex_findall('link\\s+status\\s*:\\s*([a-z]+)') | first | default('unknown')) | capitalize
+                 ( 'Invalid' if invalid else
+                   ( (si_lower | regex_findall('link\\s+status\\s*:\\s*([a-z]+)') | first | default('unknown')) | capitalize )
+                 )
               ),
               'port_enabled': (
-                 (si_lower | regex_findall('port\\s+enabled\\s*:\\s*([a-z]+)') | first | default('unknown')) | capitalize
+                 ( 'Unknown' if invalid else
+                   ( (si_lower | regex_findall('port\\s+enabled\\s*:\\s*([a-z]+)') | first | default('unknown')) | capitalize )
+                 )
               ),
               'name': (
-                 # Prefer the explicit running-config name "..."
-                 (
-                   sr_text | regex_findall('name\\s+\\"\\s*(.*?)\\s*\\"')
-                 ) | first
-                 | default(
-                     # Fallback to the Name: field in "show interface"
-                     (si_text | regex_findall('Name\\s*:\\s*(.+)') | first | default(''))
-                   )
+                 ( sr_text | regex_findall('name\\s+\\"\\s*(.*?)\\s*\\"') | first | default('') | trim )
+                 | default( (si_text | regex_findall('Name\\s*:\\s*(.+)') | first | default('')) )
                  | trim
-               )
+              )
             } ]
           }}
       loop: "{{ show_outputs.results }}"
@@ -152,7 +203,7 @@
       loop_control:
         label: "{{ item.interface }}"
 
-    # Optional: emit raw JSON for downstream systems
+    # Optional JSON output for integrations:
     # - name: Raw JSON result
     #   debug:
     #     var: interfaces_info
