@@ -4,8 +4,8 @@
   hosts: localhost
   gather_facts: false
 
-  # Load switch mapping; adjust the paths if your repo layout differs.
   tasks:
+    # Load switch_mapping from common locations
     - name: Load switch_mapping (vars/switch_mapping.yml)
       include_vars:
         file: vars/switch_mapping.yml
@@ -35,14 +35,31 @@
         msg: "Could not load 'switch_mapping'. Ensure it defines 'switch_mapping: { switch: [rooms...] }'."
       when: switch_mapping is not defined
 
-    - name: Ensure we got a room and a port_number
+    # Normalize the incoming interface variable:
+    # prefer 'port_number'; else accept 'port', 'interface', or 'ifname'
+    - name: Determine effective port number
+      set_fact:
+        port_number_effective: >-
+          {{
+            [ port_number | default(''),
+              port | default(''),
+              interface | default(''),
+              ifname | default('') ]
+            | map('string')
+            | map('trim')
+            | reject('equalto','')
+            | list
+            | first
+            | default('')
+          }}
+
+    - name: Ensure we got a room and a port
       assert:
         that:
           - room is defined
           - (room | string) | length > 0
-          - port_number is defined
-          - (port_number | string) | length > 0
-        fail_msg: "Provide 'room' and 'port_number' (e.g., room: n-g-36, port_number: '1/20')."
+          - (port_number_effective | string) | length > 0
+        fail_msg: "Provide 'room' and a port (use one of: port_number, port, interface, ifname). Example: room: n-g-36, port_number: '1/20'."
 
     - name: Locate switch for given room (case-insensitive)
       set_fact:
@@ -57,7 +74,7 @@
 
     - name: Build target interface list
       set_fact:
-        target_interfaces: ["{{ port_number | string }}"]
+        target_interfaces: ["{{ port_number_effective }}"]
 
     - name: Add resolved switch as a host for Play 2
       add_host:
@@ -80,7 +97,7 @@
       set_fact:
         interfaces_info: []
 
-    # Run BOTH show commands per interface in a single task (looped by interface).
+    # Run BOTH show commands per interface
     - name: Collect show outputs per interface
       community.network.aruba_command:
         commands:
@@ -89,7 +106,7 @@
       loop: "{{ target_interfaces }}"
       register: show_outputs
 
-    # Build structured records from the collected outputs
+    # Parse both outputs and accumulate a clean record
     - name: Parse and accumulate results
       set_fact:
         interfaces_info: >-
@@ -128,7 +145,7 @@
       loop_control:
         label: "{{ item.interface }}"
 
-    # If you prefer raw JSON for an external system, uncomment this:
+    # Optional: emit raw JSON
     # - name: Raw JSON result
     #   debug:
     #     var: interfaces_info
