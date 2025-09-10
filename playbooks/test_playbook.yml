@@ -56,11 +56,15 @@
             else 'Port_WP' ~ (port_number | string)
           }}
 
-    # Build device suffix(es) from survey device_name / second_device_name, or fall back to device_type vars
+    # Build device labels from survey inputs (fallback to device_type vars)
+    - name: Build device labels
+      set_fact:
+        device_label_1: "{{ (device_name | default(device_type | default('')) | string) | trim | lower }}"
+        device_label_2: "{{ (second_device_name | default(second_device_type | default('')) | string) | trim | lower }}"
+
+    # Build suffix list once labels exist
     - name: Build device label suffix list
       set_fact:
-        device_label_1: "{{ (device_name | default(ansible_device_type | default('')) | string) | trim | lower }}"
-        device_label_2: "{{ (second_device_name | default(ansible_second_device_type | default('')) | string) | trim | lower }}"
         device_suffix_list: >-
           {{
             ([device_label_1] if device_label_1 not in ['','none'] else [])
@@ -82,8 +86,7 @@
         interface_description: "{{ interface_description_final }}"
         ansible_device_type: "{{ device_type | default('none') }}"
         ansible_second_device_type: "{{ second_device_type | default('none') }}"
-        # If your inventory lacks the host/IP for switch_name, you can add:
-        # ansible_host: "{{ switch_ip_mapping[switch_name] }}"
+        # ansible_host: "{{ switch_ip_mapping[switch_name] }}"   # <- uncomment if needed
 
 # Play 2: Configure the ArubaOS-Switch interface
 - name: Configure Aruba Switch Port Based on Device Type and Configuration Cases
@@ -92,7 +95,7 @@
   connection: network_cli
   vars:
     ansible_network_os: community.network.aruba
-    cleanup_strategy: wipe    # wipe | safe  (applies to Case 1 & 2 VLAN cleanup)
+    cleanup_strategy: wipe    # wipe | safe (applies to Case 1 & 2 VLAN cleanup)
   collections:
     - community.network
   vars_files:
@@ -300,18 +303,25 @@
               - "port-security {{ ansible_port_number }} action send-disable"
 
     ###########################################################################
-    # CASE 4: None (admin down)
+    # CASE 4: None (admin down) + append "_disable" to name
     ###########################################################################
     - name: CASE 4 | None device | Apply config
       when:
         - ansible_device_type == "none"
         - ansible_second_device_type == "none"
       block:
-        - name: CASE 4 | Apply interface config
+        - name: CASE 4 | Apply interface config (with _disable suffix)
           community.network.aruba_config:
             parents: "interface {{ ansible_port_number }}"
             lines:
-              - "name {{ interface_description | quote }}"
+              - >-
+                name {{
+                  (
+                    interface_description
+                    if (interface_description is search('(_disable)$'))
+                    else (interface_description ~ '_disable')
+                  ) | quote
+                }}
               - "speed-duplex auto"
               - "disable"
 
