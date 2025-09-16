@@ -1,5 +1,5 @@
 interface_descriptions:
-  # First PDF - Page 1 (Ground Floor)
+  # Ground Floor - Right
   ng01: "Lecture_Hall"
   ng02: "Lecture_Hall"
   ng03: "Computer_Lab"
@@ -20,7 +20,7 @@ interface_descriptions:
   ng24: "Single_Office"
   ng25: "Single_Office"
   
-  # First PDF - Page 2 (First Floor)
+  # First Floor - Right
   n101: "Lecture_Hall"
   n102: "Work_Station"
   n103: "Computer_Lab"
@@ -41,7 +41,7 @@ interface_descriptions:
   n123: "Work_Station"
   n125: "Lecture_Hall"
   
-  # First PDF - Page 3 (Second Floor)
+  # Second Floor - Right
   n201: "Lecture_Hall"
   n202: "Work_Station"
   n203: "Lecture_Hall"
@@ -67,7 +67,7 @@ interface_descriptions:
   n229: "Single_Office"
   n230: "Single_Office"
   
-  # First PDF - Page 4 (Third Floor)
+  # Third Floor - Right
   n301: "Lecture_Hall"
   n302: "Control_Room"
   n303: "Drawing_Room"
@@ -91,7 +91,7 @@ interface_descriptions:
   n330: "Class_Room"
   n331: "Single_Office"
   
-  # Second PDF - Page 1 (Third Floor Extension)
+  # Third Floor - Left
   n332: "Class_Room"
   n333: "Deans_Office"
   n333/1: "Single_Office"
@@ -114,7 +114,7 @@ interface_descriptions:
   n346: "ST_ARIA"
   n348: "Control_Room"
   
-  # Second PDF - Page 2 (Second Floor Extension)
+  # Second Floor - Left
   n231: "Single_Office"
   n232: "Single_Office"
   n233: "Single_Office"
@@ -139,7 +139,7 @@ interface_descriptions:
   n255: "ST_ARIA"
   n256: "ST_ARIA"
   
-  # Second PDF - Page 3 (First Floor Extension)
+  # First Floor - Left
   n126: "Single_Office"
   n127: "Single_Office"
   n128: "Class_Room"
@@ -161,7 +161,7 @@ interface_descriptions:
   n147: "ST_ARIA"
   n148: "ST_ARIA"
   
-  # Second PDF - Page 4 (Ground Floor Extension)
+  # Ground Floor - Left
   ng27: "Class_Room"
   ng28: "Single_Office"
   ng29: "Class_Room"
