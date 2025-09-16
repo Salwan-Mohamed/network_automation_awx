@@ -1,8 +1,12 @@
 # Map each room → lab key
 # Accepts either hyphens or underscores in your inputs (playbook normalizes).
 lab_name_mapping:
-  n-g-36: lab_55
-  n-1-37: lab_37
-  n-1-39: lab_39
-  roomAG5: lab_38
-  roomA120: lab_39
+  ng03: lab_g03
+  ng36: lab_g36
+  n103: lab_103
+  n105: lab_105
+  0137: lab_137
+  n139: lab_139
+  n335: lab_335_cisco
+  n338: lab_338
+  
