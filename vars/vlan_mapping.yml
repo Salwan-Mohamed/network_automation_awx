@@ -11,6 +11,6 @@ vlan_mapping:
   projector: 132
   digital_signage : 233
   zero_client: 141
-  then_client: 146
+  thin_client: 146
   podium: 40
   none: disable
