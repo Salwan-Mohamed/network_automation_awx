@@ -1,9 +1,15 @@
 vlan_mapping:
   phone: 128
-  cam: 236
+  aten: 231
+  IT: 5
+  staff: 9
+  IPTV: 50
+  AP: 125
+  camera: 236
   printer: 131
-  pc: 80
+  pc_lab: 80
   projector: 233
   zero_client: 141
+  then_client: 146
   Podium: 40
   none: disable
