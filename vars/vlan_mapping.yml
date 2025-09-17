@@ -3,7 +3,7 @@ vlan_mapping:
   aten: 132
   IT: 5
   staff: 9
-  IPTV: 50
+  iptv: 50
   access_point: 125
   camera: 136
   printer: 131
