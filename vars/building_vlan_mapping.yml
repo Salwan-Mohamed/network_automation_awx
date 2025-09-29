@@ -1,5 +1,5 @@
 ---
-# Building to VLAN ID mapping for PTV configuration
+# Building to VLAN ID mapping for IPTV configuration
 # Maps building names to their corresponding VLAN IDs
 
 building_vlan_mapping:
