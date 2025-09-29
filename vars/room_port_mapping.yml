@@ -4,8 +4,8 @@
 # Format: "room_number": "switch_port"
 
 
- # FH-4 building rooms (3xxx series)
-  "3306": "3/31"
+ # FH-3 building rooms (3xxx series)
+  "3306": "3/31" 
 room_port_mapping:
   # FH-4 building rooms (4xxx series)
   "4211": "2/9"
