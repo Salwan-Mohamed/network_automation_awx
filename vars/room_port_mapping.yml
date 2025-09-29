@@ -1,0 +1,25 @@
+---
+# Room number to switch port mapping for PTV configuration
+# Maps room numbers to their corresponding switch port interfaces
+# Format: "room_number": "switch_port"
+
+room_port_mapping:
+  # FH-4 building rooms (4xxx series)
+  "4211": "2/9"
+  
+  # FH-5 building rooms (5xxx series) 
+  "5012-1": "1/3"
+  
+  # Add more room-to-port mappings as needed
+  # Examples:
+  # "4212": "2/10"
+  # "4213": "2/11"
+  # "5012-2": "1/4"
+  # "5013": "1/5"
+  
+  # Placeholder entries - complete these based on your network documentation
+  # "1xxx": "x/x"  # FH-1 building rooms
+  # "2xxx": "x/x"  # FH-2 building rooms  
+  # "3xxx": "x/x"  # FH-3 building rooms
+  # "6xxx": "x/x"  # FH-6 building rooms
+  # "7xxx": "x/x"  # FH-7 building rooms
