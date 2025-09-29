@@ -1,0 +1,538 @@
+---
+# PTV (Projector/TV) Port Configuration Playbook with Email Notifications
+# This playbook configures Aruba switch ports for PTV devices based on building, room number, and state (ON/OFF)
+# 
+# Required inputs:
+# - building_name: Building name (e.g., "FH-1", "FH-4")
+# - room_number: Room number (e.g., "4211", "5012-1")
+# - ptv_state: Port state ("ON" or "OFF")
+
+# Play 1: Resolve and validate inputs + build configuration parameters
+- name: Resolve PTV Configuration Parameters
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/building_switch_mapping.yml
+    - ../vars/room_port_mapping.yml
+    - ../vars/building_vlan_mapping.yml
+  vars:
+    # Email configuration
+    notification_email: "salwan.mohamed@su.edu.eg"
+    smtp_server: "localhost"
+    smtp_port: 587
+    email_from: "awx-automation@{{ ansible_hostname | default('awx-system') }}.local"
+
+  tasks:
+    - name: Validate required inputs
+      block:
+        - name: Check required parameters
+          assert:
+            that:
+              - building_name is defined and building_name | length > 0
+              - room_number is defined and room_number | length > 0
+              - ptv_state is defined and ptv_state | upper in ['ON', 'OFF']
+            fail_msg: "Required inputs missing: building_name, room_number, and ptv_state (ON/OFF)"
+      rescue:
+        - name: Send email notification for validation failure
+          mail:
+            to: "{{ notification_email }}"
+            from: "{{ email_from }}"
+            subject: "PTV Configuration Failed - Invalid Parameters"
+            body: |
+              PTV Configuration Task Failed
+              =============================
+              
+              Error: Input validation failed
+              
+              Parameters received:
+              - Building Name: {{ building_name | default('NOT PROVIDED') }}
+              - Room Number: {{ room_number | default('NOT PROVIDED') }}
+              - PTV State: {{ ptv_state | default('NOT PROVIDED') }}
+              
+              Error Details: Required inputs missing or invalid
+              
+              Time: {{ ansible_date_time.iso8601 }}
+              AWX Job: {{ tower_job_id | default('N/A') }}
+              AWX Template: {{ tower_job_template_name | default('N/A') }}
+              
+              Please check the job parameters and try again.
+            host: "{{ smtp_server }}"
+            port: "{{ smtp_port }}"
+          delegate_to: localhost
+          ignore_errors: true
+        - name: Fail after sending notification
+          fail:
+            msg: "Input validation failed - notification sent"
+
+    - name: Extract first digit from room number for validation
+      set_fact:
+        room_first_digit: "{{ room_number | string | first }}"
+        building_last_char: "{{ building_name | string | last }}"
+
+    - name: Validate room number matches building
+      block:
+        - name: Check room-building consistency
+          assert:
+            that:
+              - room_first_digit == building_last_char
+            fail_msg: >
+              Room number '{{ room_number }}' (first digit: {{ room_first_digit }}) 
+              does not match building '{{ building_name }}' (last char: {{ building_last_char }})
+      rescue:
+        - name: Send email notification for room-building mismatch
+          mail:
+            to: "{{ notification_email }}"
+            from: "{{ email_from }}"
+            subject: "PTV Configuration Failed - Room/Building Mismatch"
+            body: |
+              PTV Configuration Task Failed
+              =============================
+              
+              Error: Room number does not match building
+              
+              Parameters:
+              - Building Name: {{ building_name }}
+              - Room Number: {{ room_number }}
+              - PTV State: {{ ptv_state }}
+              
+              Validation Error:
+              - Room first digit: {{ room_first_digit }}
+              - Building last character: {{ building_last_char }}
+              - These must match for consistency
+              
+              Time: {{ ansible_date_time.iso8601 }}
+              AWX Job: {{ tower_job_id | default('N/A') }}
+              AWX Template: {{ tower_job_template_name | default('N/A') }}
+              
+              Please verify the room number belongs to the specified building.
+            host: "{{ smtp_server }}"
+            port: "{{ smtp_port }}"
+          delegate_to: localhost
+          ignore_errors: true
+        - name: Fail after sending notification
+          fail:
+            msg: "Room-building validation failed - notification sent"
+
+    - name: Resolve switch name from building
+      block:
+        - name: Get switch name from mapping
+          set_fact:
+            target_switch: "{{ building_switch_mapping[building_name] }}"
+          when: building_name in building_switch_mapping
+
+        - name: Fail if building not found in mapping
+          fail:
+            msg: "Building '{{ building_name }}' not found in building_switch_mapping.yml"
+          when: building_name not in building_switch_mapping
+      rescue:
+        - name: Send email notification for missing building mapping
+          mail:
+            to: "{{ notification_email }}"
+            from: "{{ email_from }}"
+            subject: "PTV Configuration Failed - Unknown Building"
+            body: |
+              PTV Configuration Task Failed
+              =============================
+              
+              Error: Building not found in switch mapping
+              
+              Parameters:
+              - Building Name: {{ building_name }}
+              - Room Number: {{ room_number }}
+              - PTV State: {{ ptv_state }}
+              
+              Error Details:
+              Building '{{ building_name }}' is not configured in building_switch_mapping.yml
+              
+              Available buildings:
+              {{ building_switch_mapping.keys() | list | join(', ') }}
+              
+              Time: {{ ansible_date_time.iso8601 }}
+              AWX Job: {{ tower_job_id | default('N/A') }}
+              AWX Template: {{ tower_job_template_name | default('N/A') }}
+              
+              Please add the building mapping or verify the building name.
+            host: "{{ smtp_server }}"
+            port: "{{ smtp_port }}"
+          delegate_to: localhost
+          ignore_errors: true
+        - name: Fail after sending notification
+          fail:
+            msg: "Building mapping failed - notification sent"
+
+    - name: Resolve switch port from room number
+      block:
+        - name: Get port from room mapping
+          set_fact:
+            target_port: "{{ room_port_mapping[room_number] }}"
+          when: room_number in room_port_mapping
+
+        - name: Fail if room not found in mapping
+          fail:
+            msg: "Room '{{ room_number }}' not found in room_port_mapping.yml. Please add the mapping."
+          when: room_number not in room_port_mapping
+      rescue:
+        - name: Send email notification for missing room mapping
+          mail:
+            to: "{{ notification_email }}"
+            from: "{{ email_from }}"
+            subject: "PTV Configuration Failed - Unknown Room"
+            body: |
+              PTV Configuration Task Failed
+              =============================
+              
+              Error: Room not found in port mapping
+              
+              Parameters:
+              - Building Name: {{ building_name }}
+              - Room Number: {{ room_number }}
+              - PTV State: {{ ptv_state }}
+              
+              Error Details:
+              Room '{{ room_number }}' is not configured in room_port_mapping.yml
+              
+              Time: {{ ansible_date_time.iso8601 }}
+              AWX Job: {{ tower_job_id | default('N/A') }}
+              AWX Template: {{ tower_job_template_name | default('N/A') }}
+              
+              Please add the room-to-port mapping in vars/room_port_mapping.yml
+            host: "{{ smtp_server }}"
+            port: "{{ smtp_port }}"
+          delegate_to: localhost
+          ignore_errors: true
+        - name: Fail after sending notification
+          fail:
+            msg: "Room mapping failed - notification sent"
+
+    - name: Resolve VLAN ID from building
+      block:
+        - name: Get VLAN from building mapping
+          set_fact:
+            target_vlan: "{{ building_vlan_mapping[building_name] }}"
+          when: building_name in building_vlan_mapping
+
+        - name: Fail if building VLAN not found
+          fail:
+            msg: "Building '{{ building_name }}' VLAN not found in building_vlan_mapping.yml"
+          when: building_name not in building_vlan_mapping
+      rescue:
+        - name: Send email notification for missing VLAN mapping
+          mail:
+            to: "{{ notification_email }}"
+            from: "{{ email_from }}"
+            subject: "PTV Configuration Failed - Missing VLAN Mapping"
+            body: |
+              PTV Configuration Task Failed
+              =============================
+              
+              Error: Building VLAN mapping not found
+              
+              Parameters:
+              - Building Name: {{ building_name }}
+              - Room Number: {{ room_number }}
+              - PTV State: {{ ptv_state }}
+              
+              Error Details:
+              Building '{{ building_name }}' VLAN is not configured in building_vlan_mapping.yml
+              
+              Time: {{ ansible_date_time.iso8601 }}
+              AWX Job: {{ tower_job_id | default('N/A') }}
+              AWX Template: {{ tower_job_template_name | default('N/A') }}
+              
+              Please add the building VLAN mapping.
+            host: "{{ smtp_server }}"
+            port: "{{ smtp_port }}"
+          delegate_to: localhost
+          ignore_errors: true
+        - name: Fail after sending notification
+          fail:
+            msg: "VLAN mapping failed - notification sent"
+
+    - name: Build interface description
+      set_fact:
+        interface_description: "{{ room_number }}_PTV_{{ ptv_state | upper }}"
+
+    - name: Debug resolved parameters
+      debug:
+        msg:
+          - "Building: {{ building_name }}"
+          - "Room: {{ room_number }}"
+          - "PTV State: {{ ptv_state | upper }}"
+          - "Target Switch: {{ target_switch }}"
+          - "Target Port: {{ target_port }}"
+          - "Target VLAN: {{ target_vlan }}"
+          - "Interface Description: {{ interface_description }}"
+
+    - name: Add resolved switch to dynamic inventory
+      add_host:
+        name: "{{ target_switch }}"
+        groups: ptv_switches
+        ansible_port_number: "{{ target_port }}"
+        interface_description: "{{ interface_description }}"
+        ptv_state: "{{ ptv_state | upper }}"
+        target_vlan: "{{ target_vlan }}"
+        # Pass email vars to next play
+        notification_email: "{{ notification_email }}"
+        smtp_server: "{{ smtp_server }}"
+        smtp_port: "{{ smtp_port }}"
+        email_from: "{{ email_from }}"
+        building_name: "{{ building_name }}"
+        room_number: "{{ room_number }}"
+
+# Play 2: Configure the Aruba switch port
+- name: Configure Aruba Switch Port for PTV
+  hosts: ptv_switches
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: community.network.aruba
+    cleanup_strategy: wipe    # wipe | safe (applies to VLAN cleanup)
+  collections:
+    - community.network
+
+  tasks:
+    - name: Debug switch configuration parameters
+      debug:
+        msg:
+          - "Switch: {{ inventory_hostname }}"
+          - "Port: {{ ansible_port_number }}"
+          - "Interface Description: {{ interface_description }}"
+          - "PTV State: {{ ptv_state }}"
+          - "Target VLAN: {{ target_vlan }}"
+
+    ###########################################################################
+    # PTV ON Configuration - Similar to CASE 2 (untagged = device VLAN)
+    ###########################################################################
+    - name: PTV ON Configuration
+      when: ptv_state == "ON"
+      block:
+        - name: PTV ON | Read current interface config
+          community.network.aruba_command:
+            commands:
+              - "show running-config interface {{ ansible_port_number }}"
+          register: ptv_on_iface_cmd
+
+        - name: PTV ON | Extract interface text
+          set_fact:
+            ptv_on_text: "{{ (ptv_on_iface_cmd.stdout[0] | default('')) | lower }}"
+
+        - name: PTV ON | Parse existing VLAN membership
+          set_fact:
+            ptv_on_old_untagged: "{{ ptv_on_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
+            ptv_on_old_tagged:   "{{ ptv_on_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
+            ptv_on_desired_untagged: ["{{ target_vlan | string }}"]
+            ptv_on_desired_tagged: []
+
+        - name: PTV ON | Compute removal lists
+          set_fact:
+            ptv_on_remove_untagged: >-
+              {{ ptv_on_old_untagged
+                 if cleanup_strategy == 'wipe'
+                 else (ptv_on_old_untagged | map('string') | list) | difference(ptv_on_desired_untagged) }}
+            ptv_on_remove_tagged: >-
+              {{ ptv_on_old_tagged
+                 if cleanup_strategy == 'wipe'
+                 else (ptv_on_old_tagged | map('string') | list) | difference(ptv_on_desired_tagged) }}
+
+        - name: PTV ON | Remove old UNTAGGED VLAN(s)
+          community.network.aruba_config:
+            parents: "interface {{ ansible_port_number }}"
+            lines:
+              - "no untagged vlan {{ item }}"
+          loop: "{{ ptv_on_remove_untagged | default([]) }}"
+          when: (ptv_on_remove_untagged | default([])) | length > 0
+
+        - name: PTV ON | Remove old TAGGED VLAN(s)
+          community.network.aruba_config:
+            parents: "interface {{ ansible_port_number }}"
+            lines:
+              - "no tagged vlan {{ item }}"
+          loop: "{{ ptv_on_remove_tagged | default([]) }}"
+          when: (ptv_on_remove_tagged | default([])) | length > 0
+
+        - name: PTV ON | Apply interface configuration
+          community.network.aruba_config:
+            parents: "interface {{ ansible_port_number }}"
+            lines:
+              - "name {{ interface_description | quote }}"
+              - "untagged vlan {{ target_vlan }}"
+              - "speed-duplex auto"
+              - "enable"
+
+        - name: PTV ON | Apply port security
+          community.network.aruba_config:
+            lines:
+              - "port-security {{ ansible_port_number }} learn-mode static"
+              - "port-security {{ ansible_port_number }} address-limit 1"
+              - "port-security {{ ansible_port_number }} action send-disable"
+
+      rescue:
+        - name: Send email notification for PTV ON configuration failure
+          mail:
+            to: "{{ notification_email }}"
+            from: "{{ email_from }}"
+            subject: "PTV Configuration Failed - Switch Configuration Error (ON)"
+            body: |
+              PTV Configuration Task Failed
+              =============================
+              
+              Error: Switch configuration failed during PTV ON setup
+              
+              Parameters:
+              - Building Name: {{ building_name }}
+              - Room Number: {{ room_number }}
+              - PTV State: ON
+              - Switch: {{ inventory_hostname }}
+              - Port: {{ ansible_port_number }}
+              - VLAN: {{ target_vlan }}
+              
+              Error Details: {{ ansible_failed_result.msg | default('Unknown switch configuration error') }}
+              
+              Time: {{ ansible_date_time.iso8601 }}
+              AWX Job: {{ tower_job_id | default('N/A') }}
+              AWX Template: {{ tower_job_template_name | default('N/A') }}
+              
+              Please check switch connectivity and configuration.
+            host: "{{ smtp_server }}"
+            port: "{{ smtp_port }}"
+          delegate_to: localhost
+          ignore_errors: true
+        - name: Fail after sending notification
+          fail:
+            msg: "PTV ON configuration failed - notification sent"
+
+    ###########################################################################
+    # PTV OFF Configuration - Similar to CASE 4 (admin down + _disable suffix)
+    ###########################################################################
+    - name: PTV OFF Configuration
+      when: ptv_state == "OFF"
+      block:
+        - name: PTV OFF | Apply interface configuration (disabled with _disable suffix)
+          community.network.aruba_config:
+            parents: "interface {{ ansible_port_number }}"
+            lines:
+              - >-
+                name {{
+                  (
+                    interface_description
+                    if (interface_description is search('(_disable)$'))
+                    else (interface_description ~ '_disable')
+                  ) | quote
+                }}
+              - "speed-duplex auto"
+              - "disable"
+
+        - name: PTV OFF | Apply port security
+          community.network.aruba_config:
+            lines:
+              - "port-security {{ ansible_port_number }} learn-mode static"
+              - "port-security {{ ansible_port_number }} address-limit 1"
+              - "port-security {{ ansible_port_number }} action send-disable"
+
+      rescue:
+        - name: Send email notification for PTV OFF configuration failure
+          mail:
+            to: "{{ notification_email }}"
+            from: "{{ email_from }}"
+            subject: "PTV Configuration Failed - Switch Configuration Error (OFF)"
+            body: |
+              PTV Configuration Task Failed
+              =============================
+              
+              Error: Switch configuration failed during PTV OFF setup
+              
+              Parameters:
+              - Building Name: {{ building_name }}
+              - Room Number: {{ room_number }}
+              - PTV State: OFF
+              - Switch: {{ inventory_hostname }}
+              - Port: {{ ansible_port_number }}
+              
+              Error Details: {{ ansible_failed_result.msg | default('Unknown switch configuration error') }}
+              
+              Time: {{ ansible_date_time.iso8601 }}
+              AWX Job: {{ tower_job_id | default('N/A') }}
+              AWX Template: {{ tower_job_template_name | default('N/A') }}
+              
+              Please check switch connectivity and configuration.
+            host: "{{ smtp_server }}"
+            port: "{{ smtp_port }}"
+          delegate_to: localhost
+          ignore_errors: true
+        - name: Fail after sending notification
+          fail:
+            msg: "PTV OFF configuration failed - notification sent"
+
+    - name: Save configuration
+      block:
+        - name: Write memory to save config
+          community.network.aruba_command:
+            commands:
+              - "write memory"
+      rescue:
+        - name: Send email notification for save configuration failure
+          mail:
+            to: "{{ notification_email }}"
+            from: "{{ email_from }}"
+            subject: "PTV Configuration Warning - Save Failed"
+            body: |
+              PTV Configuration Warning
+              ========================
+              
+              Warning: Configuration applied but save operation failed
+              
+              Parameters:
+              - Building Name: {{ building_name }}
+              - Room Number: {{ room_number }}
+              - PTV State: {{ ptv_state }}
+              - Switch: {{ inventory_hostname }}
+              - Port: {{ ansible_port_number }}
+              
+              Warning Details: {{ ansible_failed_result.msg | default('Unknown save error') }}
+              
+              Time: {{ ansible_date_time.iso8601 }}
+              AWX Job: {{ tower_job_id | default('N/A') }}
+              AWX Template: {{ tower_job_template_name | default('N/A') }}
+              
+              The configuration was applied but not saved to startup-config.
+              Please manually save the configuration if needed.
+            host: "{{ smtp_server }}"
+            port: "{{ smtp_port }}"
+          delegate_to: localhost
+          ignore_errors: true
+        - name: Continue despite save failure (warn only)
+          debug:
+            msg: "Configuration applied but save failed - notification sent"
+
+# Play 3: Send success notification
+- name: Send Success Notification
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Send success email notification
+      mail:
+        to: "{{ hostvars[groups['ptv_switches'][0]]['notification_email'] }}"
+        from: "{{ hostvars[groups['ptv_switches'][0]]['email_from'] }}"
+        subject: "PTV Configuration Successful"
+        body: |
+          PTV Configuration Completed Successfully
+          =======================================
+          
+          Configuration Details:
+          - Building Name: {{ hostvars[groups['ptv_switches'][0]]['building_name'] }}
+          - Room Number: {{ hostvars[groups['ptv_switches'][0]]['room_number'] }}
+          - PTV State: {{ hostvars[groups['ptv_switches'][0]]['ptv_state'] }}
+          - Switch: {{ groups['ptv_switches'][0] }}
+          - Port: {{ hostvars[groups['ptv_switches'][0]]['ansible_port_number'] }}
+          - VLAN: {{ hostvars[groups['ptv_switches'][0]]['target_vlan'] }}
+          - Interface Name: {{ hostvars[groups['ptv_switches'][0]]['interface_description'] }}
+          
+          Time: {{ ansible_date_time.iso8601 }}
+          AWX Job: {{ tower_job_id | default('N/A') }}
+          AWX Template: {{ tower_job_template_name | default('N/A') }}
+          
+          The PTV port has been successfully configured.
+        host: "{{ hostvars[groups['ptv_switches'][0]]['smtp_server'] }}"
+        port: "{{ hostvars[groups['ptv_switches'][0]]['smtp_port'] }}"
+      when: groups['ptv_switches'] is defined and groups['ptv_switches'] | length > 0
+      ignore_errors: true
