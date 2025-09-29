@@ -1,5 +1,5 @@
 ---
-# Building name to switch name mapping for PTV configuration
+# Building name to switch name mapping for IPTV configuration
 # Maps building names like "FH-1" to actual switch names like "aruba_FH1"
 
 building_switch_mapping:
