@@ -1,0 +1,219 @@
+---
+# PTV (Projector/TV) Port Configuration Playbook
+# This playbook configures Aruba switch ports for PTV devices based on building, room number, and state (ON/OFF)
+# 
+# Required inputs:
+# - building_name: Building name (e.g., "FH-1", "FH-4")
+# - room_number: Room number (e.g., "4211", "5012-1")
+# - ptv_state: Port state ("ON" or "OFF")
+
+# Play 1: Resolve and validate inputs + build configuration parameters
+- name: Resolve PTV Configuration Parameters
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/building_switch_mapping.yml
+    - ../vars/room_port_mapping.yml
+    - ../vars/building_vlan_mapping.yml
+
+  tasks:
+    - name: Validate required inputs
+      assert:
+        that:
+          - building_name is defined and building_name | length > 0
+          - room_number is defined and room_number | length > 0
+          - ptv_state is defined and ptv_state | upper in ['ON', 'OFF']
+        fail_msg: "Required inputs missing: building_name, room_number, and ptv_state (ON/OFF)"
+
+    - name: Extract first digit from room number for validation
+      set_fact:
+        room_first_digit: "{{ room_number | string | first }}"
+        building_last_char: "{{ building_name | string | last }}"
+
+    - name: Validate room number matches building
+      assert:
+        that:
+          - room_first_digit == building_last_char
+        fail_msg: >
+          Room number '{{ room_number }}' (first digit: {{ room_first_digit }}) 
+          does not match building '{{ building_name }}' (last char: {{ building_last_char }})
+
+    - name: Resolve switch name from building
+      set_fact:
+        target_switch: "{{ building_switch_mapping[building_name] }}"
+      when: building_name in building_switch_mapping
+
+    - name: Fail if building not found in mapping
+      fail:
+        msg: "Building '{{ building_name }}' not found in building_switch_mapping.yml"
+      when: building_name not in building_switch_mapping
+
+    - name: Resolve switch port from room number
+      set_fact:
+        target_port: "{{ room_port_mapping[room_number] }}"
+      when: room_number in room_port_mapping
+
+    - name: Fail if room not found in mapping
+      fail:
+        msg: "Room '{{ room_number }}' not found in room_port_mapping.yml. Please add the mapping."
+      when: room_number not in room_port_mapping
+
+    - name: Resolve VLAN ID from building
+      set_fact:
+        target_vlan: "{{ building_vlan_mapping[building_name] }}"
+      when: building_name in building_vlan_mapping
+
+    - name: Fail if building VLAN not found
+      fail:
+        msg: "Building '{{ building_name }}' VLAN not found in building_vlan_mapping.yml"
+      when: building_name not in building_vlan_mapping
+
+    - name: Build interface description
+      set_fact:
+        interface_description: "{{ room_number }}_PTV_{{ ptv_state | upper }}"
+
+    - name: Debug resolved parameters
+      debug:
+        msg:
+          - "Building: {{ building_name }}"
+          - "Room: {{ room_number }}"
+          - "PTV State: {{ ptv_state | upper }}"
+          - "Target Switch: {{ target_switch }}"
+          - "Target Port: {{ target_port }}"
+          - "Target VLAN: {{ target_vlan }}"
+          - "Interface Description: {{ interface_description }}"
+
+    - name: Add resolved switch to dynamic inventory
+      add_host:
+        name: "{{ target_switch }}"
+        groups: ptv_switches
+        ansible_port_number: "{{ target_port }}"
+        interface_description: "{{ interface_description }}"
+        ptv_state: "{{ ptv_state | upper }}"
+        target_vlan: "{{ target_vlan }}"
+
+# Play 2: Configure the Aruba switch port
+- name: Configure Aruba Switch Port for PTV
+  hosts: ptv_switches
+  gather_facts: false
+  connection: network_cli
+  vars:
+    ansible_network_os: community.network.aruba
+    cleanup_strategy: wipe    # wipe | safe (applies to VLAN cleanup)
+  collections:
+    - community.network
+
+  tasks:
+    - name: Debug switch configuration parameters
+      debug:
+        msg:
+          - "Switch: {{ inventory_hostname }}"
+          - "Port: {{ ansible_port_number }}"
+          - "Interface Description: {{ interface_description }}"
+          - "PTV State: {{ ptv_state }}"
+          - "Target VLAN: {{ target_vlan }}"
+
+    ###########################################################################
+    # PTV ON Configuration - Similar to CASE 2 (untagged = device VLAN)
+    ###########################################################################
+    - name: PTV ON | Read current interface config
+      community.network.aruba_command:
+        commands:
+          - "show running-config interface {{ ansible_port_number }}"
+      register: ptv_on_iface_cmd
+      when: ptv_state == "ON"
+
+    - name: PTV ON | Extract interface text
+      set_fact:
+        ptv_on_text: "{{ (ptv_on_iface_cmd.stdout[0] | default('')) | lower }}"
+      when: ptv_state == "ON"
+
+    - name: PTV ON | Parse existing VLAN membership
+      set_fact:
+        ptv_on_old_untagged: "{{ ptv_on_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
+        ptv_on_old_tagged:   "{{ ptv_on_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
+        ptv_on_desired_untagged: ["{{ target_vlan | string }}"]
+        ptv_on_desired_tagged: []
+      when: ptv_state == "ON"
+
+    - name: PTV ON | Compute removal lists
+      set_fact:
+        ptv_on_remove_untagged: >-
+          {{ ptv_on_old_untagged
+             if cleanup_strategy == 'wipe'
+             else (ptv_on_old_untagged | map('string') | list) | difference(ptv_on_desired_untagged) }}
+        ptv_on_remove_tagged: >-
+          {{ ptv_on_old_tagged
+             if cleanup_strategy == 'wipe'
+             else (ptv_on_old_tagged | map('string') | list) | difference(ptv_on_desired_tagged) }}
+      when: ptv_state == "ON"
+
+    - name: PTV ON | Remove old UNTAGGED VLAN(s)
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "no untagged vlan {{ item }}"
+      loop: "{{ ptv_on_remove_untagged | default([]) }}"
+      when:
+        - ptv_state == "ON"
+        - (ptv_on_remove_untagged | default([])) | length > 0
+
+    - name: PTV ON | Remove old TAGGED VLAN(s)
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "no tagged vlan {{ item }}"
+      loop: "{{ ptv_on_remove_tagged | default([]) }}"
+      when:
+        - ptv_state == "ON"
+        - (ptv_on_remove_tagged | default([])) | length > 0
+
+    - name: PTV ON | Apply interface configuration
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "name {{ interface_description | quote }}"
+          - "untagged vlan {{ target_vlan }}"
+          - "speed-duplex auto"
+          - "enable"
+      when: ptv_state == "ON"
+
+    - name: PTV ON | Apply port security
+      community.network.aruba_config:
+        lines:
+          - "port-security {{ ansible_port_number }} learn-mode static"
+          - "port-security {{ ansible_port_number }} address-limit 1"
+          - "port-security {{ ansible_port_number }} action send-disable"
+      when: ptv_state == "ON"
+
+    ###########################################################################
+    # PTV OFF Configuration - Similar to CASE 4 (admin down + _disable suffix)
+    ###########################################################################
+    - name: PTV OFF | Apply interface configuration (disabled with _disable suffix)
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - >-
+            name {{
+              (
+                interface_description
+                if (interface_description is search('(_disable)$'))
+                else (interface_description ~ '_disable')
+              ) | quote
+            }}
+          - "speed-duplex auto"
+          - "disable"
+      when: ptv_state == "OFF"
+
+    - name: PTV OFF | Apply port security
+      community.network.aruba_config:
+        lines:
+          - "port-security {{ ansible_port_number }} learn-mode static"
+          - "port-security {{ ansible_port_number }} address-limit 1"
+          - "port-security {{ ansible_port_number }} action send-disable"
+      when: ptv_state == "OFF"
+
+    - name: Save configuration
+      community.network.aruba_command:
+        commands:
+          - "write memory"
