@@ -1,5 +1,5 @@
 ---
-# Room number to switch port mapping for PTV configuration
+# Room number to switch port mapping for IPTV configuration
 # Maps room numbers to their corresponding switch port interfaces
 # Format: "room_number": "switch_port"
 
