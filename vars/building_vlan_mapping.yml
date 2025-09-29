@@ -1,0 +1,12 @@
+---
+# Building to VLAN ID mapping for PTV configuration
+# Maps building names to their corresponding VLAN IDs
+
+building_vlan_mapping:
+  "FH-1": 51
+  "FH-2": 52
+  "FH-3": 53
+  "FH-4": 54
+  "FH-5": 55
+  "FH-6": 56
+  "FH-7": 57
