@@ -70,7 +70,7 @@
 
     - name: Build interface description
       set_fact:
-        interface_description: "{{ room_number }}_PTV_{{ IPTV_state | upper }}"
+        interface_description: "{{ room_number }}_IPTV_{{ IPTV_state | upper }}"
 
     - name: Debug resolved parameters
       debug:
