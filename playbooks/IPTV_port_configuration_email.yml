@@ -1,14 +1,14 @@
 ---
-# PTV (Projector/TV) Port Configuration Playbook with Email Notifications
-# This playbook configures Aruba switch ports for PTV devices based on building, room number, and state (ON/OFF)
+# IPTV (Projector/TV) Port Configuration Playbook with Email Notifications
+# This playbook configures Aruba switch ports for IPTV devices based on building, room number, and state (ON/OFF)
 # 
 # Required inputs:
 # - building_name: Building name (e.g., "FH-1", "FH-4")
 # - room_number: Room number (e.g., "4211", "5012-1")
-# - ptv_state: Port state ("ON" or "OFF")
+# - IPTV_state: Port state ("ON" or "OFF")
 
 # Play 1: Resolve and validate inputs + build configuration parameters
-- name: Resolve PTV Configuration Parameters
+- name: Resolve IPTV Configuration Parameters
   hosts: localhost
   gather_facts: false
   vars_files:
@@ -30,16 +30,16 @@
             that:
               - building_name is defined and building_name | length > 0
               - room_number is defined and room_number | length > 0
-              - ptv_state is defined and ptv_state | upper in ['ON', 'OFF']
-            fail_msg: "Required inputs missing: building_name, room_number, and ptv_state (ON/OFF)"
+              - IPTV_state is defined and IPTV_state | upper in ['ON', 'OFF']
+            fail_msg: "Required inputs missing: building_name, room_number, and IPTV_state (ON/OFF)"
       rescue:
         - name: Send email notification for validation failure
           mail:
             to: "{{ notification_email }}"
             from: "{{ email_from }}"
-            subject: "PTV Configuration Failed - Invalid Parameters"
+            subject: "IPTV Configuration Failed - Invalid Parameters"
             body: |
-              PTV Configuration Task Failed
+              IPTV Configuration Task Failed
               =============================
               
               Error: Input validation failed
@@ -47,7 +47,7 @@
               Parameters received:
               - Building Name: {{ building_name | default('NOT PROVIDED') }}
               - Room Number: {{ room_number | default('NOT PROVIDED') }}
-              - PTV State: {{ ptv_state | default('NOT PROVIDED') }}
+              - IPTV State: {{ IPTV_state | default('NOT PROVIDED') }}
               
               Error Details: Required inputs missing or invalid
               
@@ -83,9 +83,9 @@
           mail:
             to: "{{ notification_email }}"
             from: "{{ email_from }}"
-            subject: "PTV Configuration Failed - Room/Building Mismatch"
+            subject: "IPTV Configuration Failed - Room/Building Mismatch"
             body: |
-              PTV Configuration Task Failed
+              IPTV Configuration Task Failed
               =============================
               
               Error: Room number does not match building
@@ -93,7 +93,7 @@
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - PTV State: {{ ptv_state }}
+              - IPTV State: {{ IPTV_state }}
               
               Validation Error:
               - Room first digit: {{ room_first_digit }}
@@ -129,9 +129,9 @@
           mail:
             to: "{{ notification_email }}"
             from: "{{ email_from }}"
-            subject: "PTV Configuration Failed - Unknown Building"
+            subject: "IPTV Configuration Failed - Unknown Building"
             body: |
-              PTV Configuration Task Failed
+              IPTV Configuration Task Failed
               =============================
               
               Error: Building not found in switch mapping
@@ -139,7 +139,7 @@
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - PTV State: {{ ptv_state }}
+              - IPTV State: {{ IPTV_state }}
               
               Error Details:
               Building '{{ building_name }}' is not configured in building_switch_mapping.yml
@@ -176,9 +176,9 @@
           mail:
             to: "{{ notification_email }}"
             from: "{{ email_from }}"
-            subject: "PTV Configuration Failed - Unknown Room"
+            subject: "IPTV Configuration Failed - Unknown Room"
             body: |
-              PTV Configuration Task Failed
+              IPTV Configuration Task Failed
               =============================
               
               Error: Room not found in port mapping
@@ -186,7 +186,7 @@
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - PTV State: {{ ptv_state }}
+              - IPTV State: {{ IPTV_state }}
               
               Error Details:
               Room '{{ room_number }}' is not configured in room_port_mapping.yml
@@ -220,9 +220,9 @@
           mail:
             to: "{{ notification_email }}"
             from: "{{ email_from }}"
-            subject: "PTV Configuration Failed - Missing VLAN Mapping"
+            subject: "IPTV Configuration Failed - Missing VLAN Mapping"
             body: |
-              PTV Configuration Task Failed
+              IPTV Configuration Task Failed
               =============================
               
               Error: Building VLAN mapping not found
@@ -230,7 +230,7 @@
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - PTV State: {{ ptv_state }}
+              - IPTV State: {{ IPTV_state }}
               
               Error Details:
               Building '{{ building_name }}' VLAN is not configured in building_vlan_mapping.yml
@@ -250,14 +250,14 @@
 
     - name: Build interface description
       set_fact:
-        interface_description: "{{ room_number }}_PTV_{{ ptv_state | upper }}"
+        interface_description: "{{ room_number }}_IPTV_{{ IPTV_state | upper }}"
 
     - name: Debug resolved parameters
       debug:
         msg:
           - "Building: {{ building_name }}"
           - "Room: {{ room_number }}"
-          - "PTV State: {{ ptv_state | upper }}"
+          - "IPTV State: {{ IPTV_state | upper }}"
           - "Target Switch: {{ target_switch }}"
           - "Target Port: {{ target_port }}"
           - "Target VLAN: {{ target_vlan }}"
@@ -266,10 +266,10 @@
     - name: Add resolved switch to dynamic inventory
       add_host:
         name: "{{ target_switch }}"
-        groups: ptv_switches
+        groups: IPTV_switches
         ansible_port_number: "{{ target_port }}"
         interface_description: "{{ interface_description }}"
-        ptv_state: "{{ ptv_state | upper }}"
+        IPTV_state: "{{ IPTV_state | upper }}"
         target_vlan: "{{ target_vlan }}"
         # Pass email vars to next play
         notification_email: "{{ notification_email }}"
@@ -280,8 +280,8 @@
         room_number: "{{ room_number }}"
 
 # Play 2: Configure the Aruba switch port
-- name: Configure Aruba Switch Port for PTV
-  hosts: ptv_switches
+- name: Configure Aruba Switch Port for IPTV
+  hosts: IPTV_switches
   gather_facts: false
   connection: network_cli
   vars:
@@ -297,60 +297,60 @@
           - "Switch: {{ inventory_hostname }}"
           - "Port: {{ ansible_port_number }}"
           - "Interface Description: {{ interface_description }}"
-          - "PTV State: {{ ptv_state }}"
+          - "IPTV State: {{ IPTV_state }}"
           - "Target VLAN: {{ target_vlan }}"
 
     ###########################################################################
-    # PTV ON Configuration - Similar to CASE 2 (untagged = device VLAN)
+    # IPTV ON Configuration - Similar to CASE 2 (untagged = device VLAN)
     ###########################################################################
-    - name: PTV ON Configuration
-      when: ptv_state == "ON"
+    - name: IPTV ON Configuration
+      when: IPTV_state == "ON"
       block:
-        - name: PTV ON | Read current interface config
+        - name: IPTV ON | Read current interface config
           community.network.aruba_command:
             commands:
               - "show running-config interface {{ ansible_port_number }}"
-          register: ptv_on_iface_cmd
+          register: IPTV_on_iface_cmd
 
-        - name: PTV ON | Extract interface text
+        - name: IPTV ON | Extract interface text
           set_fact:
-            ptv_on_text: "{{ (ptv_on_iface_cmd.stdout[0] | default('')) | lower }}"
+            IPTV_on_text: "{{ (IPTV_on_iface_cmd.stdout[0] | default('')) | lower }}"
 
-        - name: PTV ON | Parse existing VLAN membership
+        - name: IPTV ON | Parse existing VLAN membership
           set_fact:
-            ptv_on_old_untagged: "{{ ptv_on_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
-            ptv_on_old_tagged:   "{{ ptv_on_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
-            ptv_on_desired_untagged: ["{{ target_vlan | string }}"]
-            ptv_on_desired_tagged: []
+            IPTV_on_old_untagged: "{{ IPTV_on_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
+            IPTV_on_old_tagged:   "{{ IPTV_on_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
+            IPTV_on_desired_untagged: ["{{ target_vlan | string }}"]
+            IPTV_on_desired_tagged: []
 
-        - name: PTV ON | Compute removal lists
+        - name: IPTV ON | Compute removal lists
           set_fact:
-            ptv_on_remove_untagged: >-
-              {{ ptv_on_old_untagged
+            IPTV_on_remove_untagged: >-
+              {{ IPTV_on_old_untagged
                  if cleanup_strategy == 'wipe'
-                 else (ptv_on_old_untagged | map('string') | list) | difference(ptv_on_desired_untagged) }}
-            ptv_on_remove_tagged: >-
-              {{ ptv_on_old_tagged
+                 else (IPTV_on_old_untagged | map('string') | list) | difference(IPTV_on_desired_untagged) }}
+            IPTV_on_remove_tagged: >-
+              {{ IPTV_on_old_tagged
                  if cleanup_strategy == 'wipe'
-                 else (ptv_on_old_tagged | map('string') | list) | difference(ptv_on_desired_tagged) }}
+                 else (IPTV_on_old_tagged | map('string') | list) | difference(IPTV_on_desired_tagged) }}
 
-        - name: PTV ON | Remove old UNTAGGED VLAN(s)
+        - name: IPTV ON | Remove old UNTAGGED VLAN(s)
           community.network.aruba_config:
             parents: "interface {{ ansible_port_number }}"
             lines:
               - "no untagged vlan {{ item }}"
-          loop: "{{ ptv_on_remove_untagged | default([]) }}"
-          when: (ptv_on_remove_untagged | default([])) | length > 0
+          loop: "{{ IPTV_on_remove_untagged | default([]) }}"
+          when: (IPTV_on_remove_untagged | default([])) | length > 0
 
-        - name: PTV ON | Remove old TAGGED VLAN(s)
+        - name: IPTV ON | Remove old TAGGED VLAN(s)
           community.network.aruba_config:
             parents: "interface {{ ansible_port_number }}"
             lines:
               - "no tagged vlan {{ item }}"
-          loop: "{{ ptv_on_remove_tagged | default([]) }}"
-          when: (ptv_on_remove_tagged | default([])) | length > 0
+          loop: "{{ IPTV_on_remove_tagged | default([]) }}"
+          when: (IPTV_on_remove_tagged | default([])) | length > 0
 
-        - name: PTV ON | Apply interface configuration
+        - name: IPTV ON | Apply interface configuration
           community.network.aruba_config:
             parents: "interface {{ ansible_port_number }}"
             lines:
@@ -359,7 +359,7 @@
               - "speed-duplex auto"
               - "enable"
 
-        - name: PTV ON | Apply port security
+        - name: IPTV ON | Apply port security
           community.network.aruba_config:
             lines:
               - "port-security {{ ansible_port_number }} learn-mode static"
@@ -367,21 +367,21 @@
               - "port-security {{ ansible_port_number }} action send-disable"
 
       rescue:
-        - name: Send email notification for PTV ON configuration failure
+        - name: Send email notification for IPTV ON configuration failure
           mail:
             to: "{{ notification_email }}"
             from: "{{ email_from }}"
-            subject: "PTV Configuration Failed - Switch Configuration Error (ON)"
+            subject: "IPTV Configuration Failed - Switch Configuration Error (ON)"
             body: |
-              PTV Configuration Task Failed
+              IPTV Configuration Task Failed
               =============================
               
-              Error: Switch configuration failed during PTV ON setup
+              Error: Switch configuration failed during IPTV ON setup
               
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - PTV State: ON
+              - IPTV State: ON
               - Switch: {{ inventory_hostname }}
               - Port: {{ ansible_port_number }}
               - VLAN: {{ target_vlan }}
@@ -399,15 +399,15 @@
           ignore_errors: true
         - name: Fail after sending notification
           fail:
-            msg: "PTV ON configuration failed - notification sent"
+            msg: "IPTV ON configuration failed - notification sent"
 
     ###########################################################################
-    # PTV OFF Configuration - Similar to CASE 4 (admin down + _disable suffix)
+    # IPTV OFF Configuration - Similar to CASE 4 (admin down + _disable suffix)
     ###########################################################################
-    - name: PTV OFF Configuration
-      when: ptv_state == "OFF"
+    - name: IPTV OFF Configuration
+      when: IPTV_state == "OFF"
       block:
-        - name: PTV OFF | Apply interface configuration (disabled with _disable suffix)
+        - name: IPTV OFF | Apply interface configuration (disabled with _disable suffix)
           community.network.aruba_config:
             parents: "interface {{ ansible_port_number }}"
             lines:
@@ -422,7 +422,7 @@
               - "speed-duplex auto"
               - "disable"
 
-        - name: PTV OFF | Apply port security
+        - name: IPTV OFF | Apply port security
           community.network.aruba_config:
             lines:
               - "port-security {{ ansible_port_number }} learn-mode static"
@@ -430,21 +430,21 @@
               - "port-security {{ ansible_port_number }} action send-disable"
 
       rescue:
-        - name: Send email notification for PTV OFF configuration failure
+        - name: Send email notification for IPTV OFF configuration failure
           mail:
             to: "{{ notification_email }}"
             from: "{{ email_from }}"
-            subject: "PTV Configuration Failed - Switch Configuration Error (OFF)"
+            subject: "IPTV Configuration Failed - Switch Configuration Error (OFF)"
             body: |
-              PTV Configuration Task Failed
+              IPTV Configuration Task Failed
               =============================
               
-              Error: Switch configuration failed during PTV OFF setup
+              Error: Switch configuration failed during IPTV OFF setup
               
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - PTV State: OFF
+              - IPTV State: OFF
               - Switch: {{ inventory_hostname }}
               - Port: {{ ansible_port_number }}
               
@@ -461,7 +461,7 @@
           ignore_errors: true
         - name: Fail after sending notification
           fail:
-            msg: "PTV OFF configuration failed - notification sent"
+            msg: "IPTV OFF configuration failed - notification sent"
 
     - name: Save configuration
       block:
@@ -474,9 +474,9 @@
           mail:
             to: "{{ notification_email }}"
             from: "{{ email_from }}"
-            subject: "PTV Configuration Warning - Save Failed"
+            subject: "IPTV Configuration Warning - Save Failed"
             body: |
-              PTV Configuration Warning
+              IPTV Configuration Warning
               ========================
               
               Warning: Configuration applied but save operation failed
@@ -484,7 +484,7 @@
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - PTV State: {{ ptv_state }}
+              - IPTV State: {{ IPTV_state }}
               - Switch: {{ inventory_hostname }}
               - Port: {{ ansible_port_number }}
               
@@ -511,28 +511,28 @@
   tasks:
     - name: Send success email notification
       mail:
-        to: "{{ hostvars[groups['ptv_switches'][0]]['notification_email'] }}"
-        from: "{{ hostvars[groups['ptv_switches'][0]]['email_from'] }}"
-        subject: "PTV Configuration Successful"
+        to: "{{ hostvars[groups['IPTV_switches'][0]]['notification_email'] }}"
+        from: "{{ hostvars[groups['IPTV_switches'][0]]['email_from'] }}"
+        subject: "IPTV Configuration Successful"
         body: |
-          PTV Configuration Completed Successfully
+          IPTV Configuration Completed Successfully
           =======================================
           
           Configuration Details:
-          - Building Name: {{ hostvars[groups['ptv_switches'][0]]['building_name'] }}
-          - Room Number: {{ hostvars[groups['ptv_switches'][0]]['room_number'] }}
-          - PTV State: {{ hostvars[groups['ptv_switches'][0]]['ptv_state'] }}
-          - Switch: {{ groups['ptv_switches'][0] }}
-          - Port: {{ hostvars[groups['ptv_switches'][0]]['ansible_port_number'] }}
-          - VLAN: {{ hostvars[groups['ptv_switches'][0]]['target_vlan'] }}
-          - Interface Name: {{ hostvars[groups['ptv_switches'][0]]['interface_description'] }}
+          - Building Name: {{ hostvars[groups['IPTV_switches'][0]]['building_name'] }}
+          - Room Number: {{ hostvars[groups['IPTV_switches'][0]]['room_number'] }}
+          - IPTV State: {{ hostvars[groups['IPTV_switches'][0]]['IPTV_state'] }}
+          - Switch: {{ groups['IPTV_switches'][0] }}
+          - Port: {{ hostvars[groups['IPTV_switches'][0]]['ansible_port_number'] }}
+          - VLAN: {{ hostvars[groups['IPTV_switches'][0]]['target_vlan'] }}
+          - Interface Name: {{ hostvars[groups['IPTV_switches'][0]]['interface_description'] }}
           
           Time: {{ ansible_date_time.iso8601 }}
           AWX Job: {{ tower_job_id | default('N/A') }}
           AWX Template: {{ tower_job_template_name | default('N/A') }}
           
-          The PTV port has been successfully configured.
-        host: "{{ hostvars[groups['ptv_switches'][0]]['smtp_server'] }}"
-        port: "{{ hostvars[groups['ptv_switches'][0]]['smtp_port'] }}"
-      when: groups['ptv_switches'] is defined and groups['ptv_switches'] | length > 0
+          The IPTV port has been successfully configured.
+        host: "{{ hostvars[groups['IPTV_switches'][0]]['smtp_server'] }}"
+        port: "{{ hostvars[groups['IPTV_switches'][0]]['smtp_port'] }}"
+      when: groups['IPTV_switches'] is defined and groups['IPTV_switches'] | length > 0
       ignore_errors: true
