@@ -5,7 +5,7 @@
 # Required inputs:
 # - building_name: Building name (e.g., "FH-1", "FH-4")
 # - room_number: Room number (e.g., "4211", "5012-1")
-# - iptv_state: Port state ("ON" or "OFF")
+# - IPTV_state: Port state ("ON" or "OFF")
 
 # Play 1: Resolve and validate inputs + build configuration parameters
 - name: Resolve IPTV Configuration Parameters
@@ -30,8 +30,8 @@
             that:
               - building_name is defined and building_name | length > 0
               - room_number is defined and room_number | length > 0
-              - iptv_state is defined and iptv_state | upper in ['ON', 'OFF']
-            fail_msg: "Required inputs missing: building_name, room_number, and iptv_state (ON/OFF)"
+              - IPTV_state is defined and IPTV_state | upper in ['ON', 'OFF']
+            fail_msg: "Required inputs missing: building_name, room_number, and IPTV_state (ON/OFF)"
       rescue:
         - name: Send email notification for validation failure
           mail:
@@ -47,7 +47,7 @@
               Parameters received:
               - Building Name: {{ building_name | default('NOT PROVIDED') }}
               - Room Number: {{ room_number | default('NOT PROVIDED') }}
-              - IPTV State: {{ iptv_state | default('NOT PROVIDED') }}
+              - IPTV State: {{ IPTV_state | default('NOT PROVIDED') }}
               
               Error Details: Required inputs missing or invalid
               
@@ -93,7 +93,7 @@
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - IPTV State: {{ iptv_state }}
+              - IPTV State: {{ IPTV_state }}
               
               Validation Error:
               - Room first digit: {{ room_first_digit }}
@@ -139,7 +139,7 @@
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - IPTV State: {{ iptv_state }}
+              - IPTV State: {{ IPTV_state }}
               
               Error Details:
               Building '{{ building_name }}' is not configured in building_switch_mapping.yml
@@ -186,7 +186,7 @@
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - IPTV State: {{ iptv_state }}
+              - IPTV State: {{ IPTV_state }}
               
               Error Details:
               Room '{{ room_number }}' is not configured in room_port_mapping.yml
@@ -230,7 +230,7 @@
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - IPTV State: {{ iptv_state }}
+              - IPTV State: {{ IPTV_state }}
               
               Error Details:
               Building '{{ building_name }}' VLAN is not configured in building_vlan_mapping.yml
@@ -250,14 +250,14 @@
 
     - name: Build interface description
       set_fact:
-        interface_description: "{{ room_number }}_IPTV_{{ iptv_state | upper }}"
+        interface_description: "{{ room_number }}_IPTV_{{ IPTV_state | upper }}"
 
     - name: Debug resolved parameters
       debug:
         msg:
           - "Building: {{ building_name }}"
           - "Room: {{ room_number }}"
-          - "IPTV State: {{ iptv_state | upper }}"
+          - "IPTV State: {{ IPTV_state | upper }}"
           - "Target Switch: {{ target_switch }}"
           - "Target Port: {{ target_port }}"
           - "Target VLAN: {{ target_vlan }}"
@@ -266,10 +266,10 @@
     - name: Add resolved switch to dynamic inventory
       add_host:
         name: "{{ target_switch }}"
-        groups: iptv_switches
+        groups: IPTV_switches
         ansible_port_number: "{{ target_port }}"
         interface_description: "{{ interface_description }}"
-        iptv_state: "{{ iptv_state | upper }}"
+        IPTV_state: "{{ IPTV_state | upper }}"
         target_vlan: "{{ target_vlan }}"
         # Pass email vars to next play
         notification_email: "{{ notification_email }}"
@@ -281,7 +281,7 @@
 
 # Play 2: Configure the Aruba switch port
 - name: Configure Aruba Switch Port for IPTV
-  hosts: iptv_switches
+  hosts: IPTV_switches
   gather_facts: false
   connection: network_cli
   vars:
@@ -297,58 +297,58 @@
           - "Switch: {{ inventory_hostname }}"
           - "Port: {{ ansible_port_number }}"
           - "Interface Description: {{ interface_description }}"
-          - "IPTV State: {{ iptv_state }}"
+          - "IPTV State: {{ IPTV_state }}"
           - "Target VLAN: {{ target_vlan }}"
 
     ###########################################################################
     # IPTV ON Configuration - Similar to CASE 2 (untagged = device VLAN)
     ###########################################################################
     - name: IPTV ON Configuration
-      when: iptv_state == "ON"
+      when: IPTV_state == "ON"
       block:
         - name: IPTV ON | Read current interface config
           community.network.aruba_command:
             commands:
               - "show running-config interface {{ ansible_port_number }}"
-          register: iptv_on_iface_cmd
+          register: IPTV_on_iface_cmd
 
         - name: IPTV ON | Extract interface text
           set_fact:
-            iptv_on_text: "{{ (iptv_on_iface_cmd.stdout[0] | default('')) | lower }}"
+            IPTV_on_text: "{{ (IPTV_on_iface_cmd.stdout[0] | default('')) | lower }}"
 
         - name: IPTV ON | Parse existing VLAN membership
           set_fact:
-            iptv_on_old_untagged: "{{ iptv_on_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
-            iptv_on_old_tagged:   "{{ iptv_on_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
-            iptv_on_desired_untagged: ["{{ target_vlan | string }}"]
-            iptv_on_desired_tagged: []
+            IPTV_on_old_untagged: "{{ IPTV_on_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
+            IPTV_on_old_tagged:   "{{ IPTV_on_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
+            IPTV_on_desired_untagged: ["{{ target_vlan | string }}"]
+            IPTV_on_desired_tagged: []
 
         - name: IPTV ON | Compute removal lists
           set_fact:
-            iptv_on_remove_untagged: >-
-              {{ iptv_on_old_untagged
+            IPTV_on_remove_untagged: >-
+              {{ IPTV_on_old_untagged
                  if cleanup_strategy == 'wipe'
-                 else (iptv_on_old_untagged | map('string') | list) | difference(iptv_on_desired_untagged) }}
-            iptv_on_remove_tagged: >-
-              {{ iptv_on_old_tagged
+                 else (IPTV_on_old_untagged | map('string') | list) | difference(IPTV_on_desired_untagged) }}
+            IPTV_on_remove_tagged: >-
+              {{ IPTV_on_old_tagged
                  if cleanup_strategy == 'wipe'
-                 else (iptv_on_old_tagged | map('string') | list) | difference(iptv_on_desired_tagged) }}
+                 else (IPTV_on_old_tagged | map('string') | list) | difference(IPTV_on_desired_tagged) }}
 
         - name: IPTV ON | Remove old UNTAGGED VLAN(s)
           community.network.aruba_config:
             parents: "interface {{ ansible_port_number }}"
             lines:
               - "no untagged vlan {{ item }}"
-          loop: "{{ iptv_on_remove_untagged | default([]) }}"
-          when: (iptv_on_remove_untagged | default([])) | length > 0
+          loop: "{{ IPTV_on_remove_untagged | default([]) }}"
+          when: (IPTV_on_remove_untagged | default([])) | length > 0
 
         - name: IPTV ON | Remove old TAGGED VLAN(s)
           community.network.aruba_config:
             parents: "interface {{ ansible_port_number }}"
             lines:
               - "no tagged vlan {{ item }}"
-          loop: "{{ iptv_on_remove_tagged | default([]) }}"
-          when: (iptv_on_remove_tagged | default([])) | length > 0
+          loop: "{{ IPTV_on_remove_tagged | default([]) }}"
+          when: (IPTV_on_remove_tagged | default([])) | length > 0
 
         - name: IPTV ON | Apply interface configuration
           community.network.aruba_config:
@@ -405,7 +405,7 @@
     # IPTV OFF Configuration - Similar to CASE 4 (admin down + _disable suffix)
     ###########################################################################
     - name: IPTV OFF Configuration
-      when: iptv_state == "OFF"
+      when: IPTV_state == "OFF"
       block:
         - name: IPTV OFF | Apply interface configuration (disabled with _disable suffix)
           community.network.aruba_config:
@@ -484,7 +484,7 @@
               Parameters:
               - Building Name: {{ building_name }}
               - Room Number: {{ room_number }}
-              - IPTV State: {{ iptv_state }}
+              - IPTV State: {{ IPTV_state }}
               - Switch: {{ inventory_hostname }}
               - Port: {{ ansible_port_number }}
               
@@ -511,28 +511,28 @@
   tasks:
     - name: Send success email notification
       mail:
-        to: "{{ hostvars[groups['iptv_switches'][0]]['notification_email'] }}"
-        from: "{{ hostvars[groups['iptv_switches'][0]]['email_from'] }}"
+        to: "{{ hostvars[groups['IPTV_switches'][0]]['notification_email'] }}"
+        from: "{{ hostvars[groups['IPTV_switches'][0]]['email_from'] }}"
         subject: "IPTV Configuration Successful"
         body: |
           IPTV Configuration Completed Successfully
           =======================================
           
           Configuration Details:
-          - Building Name: {{ hostvars[groups['iptv_switches'][0]]['building_name'] }}
-          - Room Number: {{ hostvars[groups['iptv_switches'][0]]['room_number'] }}
-          - IPTV State: {{ hostvars[groups['iptv_switches'][0]]['iptv_state'] }}
-          - Switch: {{ groups['iptv_switches'][0] }}
-          - Port: {{ hostvars[groups['iptv_switches'][0]]['ansible_port_number'] }}
-          - VLAN: {{ hostvars[groups['iptv_switches'][0]]['target_vlan'] }}
-          - Interface Name: {{ hostvars[groups['iptv_switches'][0]]['interface_description'] }}
+          - Building Name: {{ hostvars[groups['IPTV_switches'][0]]['building_name'] }}
+          - Room Number: {{ hostvars[groups['IPTV_switches'][0]]['room_number'] }}
+          - IPTV State: {{ hostvars[groups['IPTV_switches'][0]]['IPTV_state'] }}
+          - Switch: {{ groups['IPTV_switches'][0] }}
+          - Port: {{ hostvars[groups['IPTV_switches'][0]]['ansible_port_number'] }}
+          - VLAN: {{ hostvars[groups['IPTV_switches'][0]]['target_vlan'] }}
+          - Interface Name: {{ hostvars[groups['IPTV_switches'][0]]['interface_description'] }}
           
           Time: {{ ansible_date_time.iso8601 }}
           AWX Job: {{ tower_job_id | default('N/A') }}
           AWX Template: {{ tower_job_template_name | default('N/A') }}
           
           The IPTV port has been successfully configured.
-        host: "{{ hostvars[groups['iptv_switches'][0]]['smtp_server'] }}"
-        port: "{{ hostvars[groups['iptv_switches'][0]]['smtp_port'] }}"
-      when: groups['iptv_switches'] is defined and groups['iptv_switches'] | length > 0
+        host: "{{ hostvars[groups['IPTV_switches'][0]]['smtp_server'] }}"
+        port: "{{ hostvars[groups['IPTV_switches'][0]]['smtp_port'] }}"
+      when: groups['IPTV_switches'] is defined and groups['IPTV_switches'] | length > 0
       ignore_errors: true
