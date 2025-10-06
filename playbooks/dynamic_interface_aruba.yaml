@@ -16,3 +16,593 @@
 #
 # Compatible with: ArubaOS-Switch (legacy and current versions)
 ################################################################################
+
+################################################################################
+# PLAY 1: SWITCH & PORT RESOLUTION + INTERFACE NAME CONSTRUCTION
+################################################################################
+# This play runs on localhost to:
+# 1. Map room numbers to switch names using switch_mapping.yml
+# 2. Convert wall point labels to actual switch port numbers
+# 3. Build standardized interface descriptions with device suffixes
+# 4. Prepare variables for the configuration play
+################################################################################
+- name: Resolve Switch Based on Room Number and Convert Wall Point
+  hosts: localhost
+  gather_facts: false
+  
+  # Variable files containing mapping tables
+  vars_files:
+    - ../vars/switch_mapping.yml      # Maps room numbers to switch names
+    - ../vars/interface_name.yml      # Interface description templates
+    - ../vars/vlan_mapping.yml        # Device types to VLAN ID mappings
+    - ../vars/wall_point_mapping.yml  # Wall point labels to port numbers
+
+  tasks:
+    #---------------------------------------------------------------------------
+    # TASK 1.1: SWITCH DISCOVERY
+    # Search through switch_mapping.yml to find which switch serves the given room
+    #---------------------------------------------------------------------------
+    - name: Find Switch for Given Room
+      set_fact:
+        switch_name: "{{ item.key }}"
+      loop: "{{ switch_mapping | dict2items }}"
+      when:
+        - room is defined
+        - room | length > 0
+        - (room | lower) in (item.value | map('lower') | list)
+
+    #---------------------------------------------------------------------------
+    # TASK 1.2: VALIDATION - SWITCH FOUND
+    # Fail fast if room number doesn't match any switch in the mapping
+    #---------------------------------------------------------------------------
+    - name: Fail if No Matching Switch is Found
+      fail:
+        msg: "No switch found for room {{ room }}. Check switch_mapping.yml"
+      when: switch_name is not defined
+
+    #---------------------------------------------------------------------------
+    # TASK 1.3: WALL POINT TO PORT CONVERSION
+    # Convert user-friendly wall point labels (e.g., "WP-A1") to actual 
+    # switch port numbers (e.g., "23") using wall_point_mapping.yml
+    #---------------------------------------------------------------------------
+    - name: Convert wall point label to actual switch port (if mapping exists)
+      set_fact:
+        actual_port_number: "{{ wall_point_mapping[port_number] }}"
+      when:
+        - port_number is defined
+        - port_number in wall_point_mapping
+
+    #---------------------------------------------------------------------------
+    # TASK 1.4: DIRECT PORT NUMBER
+    # If port_number is already a numeric port (not a wall point label),
+    # use it directly without conversion
+    #---------------------------------------------------------------------------
+    - name: Use direct port number if not in wall point mapping
+      set_fact:
+        actual_port_number: "{{ port_number }}"
+      when:
+        - port_number is defined
+        - port_number not in wall_point_mapping
+
+    #---------------------------------------------------------------------------
+    # TASK 1.5: VALIDATION - PORT NUMBER
+    # Ensure we have a valid port number before proceeding
+    #---------------------------------------------------------------------------
+    - name: Fail if Port Number Not Provided
+      fail:
+        msg: "Port number is required"
+      when: actual_port_number is not defined or (actual_port_number | string) == ""
+
+    #---------------------------------------------------------------------------
+    # TASK 1.6: INTERFACE DESCRIPTION - BASE LABEL
+    # Build the base interface description from interface_name.yml table,
+    # or create a fallback name if room is not in the table
+    # Format: "Port_RoomNumber_WPPortNumber" or table lookup value
+    #---------------------------------------------------------------------------
+    - name: Compute base interface label
+      set_fact:
+        interface_base_label: >-
+          {{
+            interface_descriptions.get(
+              room,
+              'Port_' ~ (room | string) ~ '_WP' ~ (port_number | string)
+            )
+            if room is defined and room is not none and (room | string) | length > 0
+            else 'Port_WP' ~ (port_number | string)
+          }}
+
+    #---------------------------------------------------------------------------
+    # TASK 1.7: DEVICE LABELS NORMALIZATION
+    # Convert device names/types to lowercase labels for standardization
+    # Supports both explicit device names and device type categories
+    #---------------------------------------------------------------------------
+    - name: Build device labels
+      set_fact:
+        device_label_1: "{{ (device_name | default(device_type | default('')) | string) | trim | lower }}"
+        device_label_2: "{{ (second_device_name | default(second_device_type | default('')) | string) | trim | lower }}"
+
+    #---------------------------------------------------------------------------
+    # TASK 1.8: DEVICE SUFFIX LIST CONSTRUCTION
+    # Create a list of valid device labels, excluding empty strings and 'none'
+    # This list will be appended to the interface description
+    #---------------------------------------------------------------------------
+    - name: Build device label suffix list
+      set_fact:
+        device_suffix_list: >-
+          {{
+            ([device_label_1] if device_label_1 not in ['','none'] else [])
+            + ([device_label_2] if device_label_2 not in ['','none'] else [])
+          }}
+
+    #---------------------------------------------------------------------------
+    # TASK 1.9: FINAL INTERFACE DESCRIPTION
+    # Combine base label with device suffixes
+    # Example: "Port_101_WP1_pc_printer" or "Reception_Desk_phone"
+    #---------------------------------------------------------------------------
+    - name: Build final interface description with device suffixes
+      set_fact:
+        interface_description_final: >-
+          {{
+            interface_base_label
+          }}{{ '_' ~ (device_suffix_list | join('_')) if (device_suffix_list | length) > 0 else '' }}
+
+    #---------------------------------------------------------------------------
+    # TASK 1.10: DYNAMIC INVENTORY ADDITION
+    # Add the resolved switch to inventory with all necessary variables
+    # for the configuration play to consume
+    #---------------------------------------------------------------------------
+    - name: Add Resolved Switch to Inventory
+      add_host:
+        name: "{{ switch_name }}"
+        groups: dynamic_switches
+        ansible_port_number: "{{ actual_port_number }}"
+        interface_description: "{{ interface_description_final }}"
+        ansible_device_type: "{{ device_type | default('none') }}"
+        ansible_second_device_type: "{{ second_device_type | default('none') }}"
+        # ansible_host: "{{ switch_ip_mapping[switch_name] }}"   # Uncomment to use IP mapping
+
+################################################################################
+# PLAY 2: ARUBA SWITCH PORT CONFIGURATION
+################################################################################
+# This play connects to the actual Aruba switch and configures the port
+# based on device type(s). It handles VLAN assignment, port security,
+# and interface state (enabled/disabled).
+#
+# Connection: network_cli (SSH to switch)
+# Network OS: community.network.aruba
+################################################################################
+- name: Configure Aruba Switch Port Based on Device Type and Configuration Cases
+  hosts: dynamic_switches
+  gather_facts: false
+  connection: network_cli
+  
+  vars:
+    ansible_network_os: community.network.aruba
+    
+    #---------------------------------------------------------------------------
+    # CLEANUP STRATEGY: Controls how existing VLAN assignments are handled
+    # - "wipe": Remove ALL existing VLANs before applying new config (clean slate)
+    # - "safe": Only remove VLANs that conflict with desired config (preserve others)
+    # Applies to: CASE 1 and CASE 2 only (CASE 3 & 4 don't use this)
+    #---------------------------------------------------------------------------
+    cleanup_strategy: wipe
+    
+  collections:
+    - community.network
+    
+  vars_files:
+    - ../vars/vlan_mapping.yml  # Maps device types to VLAN IDs
+
+  tasks:
+    #---------------------------------------------------------------------------
+    # TASK 2.1: DEBUG OUTPUT
+    # Display all resolved variables for troubleshooting and verification
+    #---------------------------------------------------------------------------
+    - name: Debug (switch/port/input)
+      debug:
+        msg:
+          - "Switch: {{ inventory_hostname }}"
+          - "Port: {{ ansible_port_number }}"
+          - "Interface Final Description: {{ interface_description }}"
+          - "Primary Device Type: {{ ansible_device_type }}"
+          - "Second Device Type: {{ ansible_second_device_type }}"
+
+    ###########################################################################
+    # CASE 1: PHONE ONLY CONFIGURATION
+    ###########################################################################
+    # Scenario: VoIP phone connected directly to the switch port
+    # 
+    # Configuration Applied:
+    # - VLAN: Tagged (Voice VLAN from vlan_mapping.phone)
+    # - Port Security: 1 MAC address allowed (static learning)
+    # - Port State: Enabled
+    # - Speed: Auto-negotiation
+    #
+    # VLAN Behavior:
+    # - Phone receives voice VLAN via 802.1Q tagging (LLDP-MED)
+    # - No untagged VLAN (no data devices expected)
+    #
+    # Port Security Details:
+    # - learn-mode static: Prevents dynamic MAC learning
+    # - address-limit 1: Only one device (phone) allowed
+    # - action send-disable: Port disabled if violation detected
+    # - "no port-security" first: Clears any legacy config (old switch compatibility)
+    ###########################################################################
+    
+    #---------------------------------------------------------------------------
+    # Read current configuration to identify existing VLANs
+    #---------------------------------------------------------------------------
+    - name: CASE 1 | Read current interface config
+      community.network.aruba_command:
+        commands:
+          - "show running-config interface {{ ansible_port_number }}"
+      register: c1_iface_cmd
+      when: ansible_device_type == "phone"
+
+    - name: CASE 1 | Extract interface text
+      set_fact:
+        c1_text: "{{ (c1_iface_cmd.stdout[0] | default('')) | lower }}"
+      when: ansible_device_type == "phone"
+
+    #---------------------------------------------------------------------------
+    # Parse existing VLANs and define desired VLAN state
+    #---------------------------------------------------------------------------
+    - name: CASE 1 | Parse existing VLAN membership
+      set_fact:
+        c1_old_untagged: "{{ c1_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
+        c1_old_tagged:   "{{ c1_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
+        c1_desired_untagged: []  # Phone should have NO untagged VLAN
+        c1_desired_tagged: ["{{ vlan_mapping.phone | string }}"]  # Phone VLAN tagged
+      when: ansible_device_type == "phone"
+
+    #---------------------------------------------------------------------------
+    # Calculate which VLANs to remove based on cleanup_strategy
+    #---------------------------------------------------------------------------
+    - name: CASE 1 | Compute removal lists
+      set_fact:
+        c1_remove_untagged: >-
+          {{ c1_old_untagged
+             if cleanup_strategy == 'wipe'
+             else (c1_old_untagged | map('string') | list) | difference(c1_desired_untagged) }}
+        c1_remove_tagged: >-
+          {{ c1_old_tagged
+             if cleanup_strategy == 'wipe'
+             else (c1_old_tagged | map('string') | list) | difference(c1_desired_tagged) }}
+      when: ansible_device_type == "phone"
+
+    #---------------------------------------------------------------------------
+    # Remove unwanted UNTAGGED VLANs (if any exist)
+    #---------------------------------------------------------------------------
+    - name: CASE 1 | Remove old UNTAGGED VLAN(s)
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "no untagged vlan {{ item }}"
+      loop: "{{ c1_remove_untagged | default([]) }}"
+      when:
+        - ansible_device_type == "phone"
+        - (c1_remove_untagged | default([])) | length > 0
+
+    #---------------------------------------------------------------------------
+    # Remove unwanted TAGGED VLANs (keep only phone VLAN)
+    #---------------------------------------------------------------------------
+    - name: CASE 1 | Remove old TAGGED VLAN(s)
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "no tagged vlan {{ item }}"
+      loop: "{{ c1_remove_tagged | default([]) }}"
+      when:
+        - ansible_device_type == "phone"
+        - (c1_remove_tagged | default([])) | length > 0
+
+    #---------------------------------------------------------------------------
+    # Apply phone-specific interface configuration
+    #---------------------------------------------------------------------------
+    - name: CASE 1 | Apply phone-only interface config
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "name {{ interface_description | quote }}"        # Descriptive port name
+          - "tagged vlan {{ vlan_mapping.phone }}"            # Voice VLAN (802.1Q)
+          - "speed-duplex auto"                               # Auto-negotiation
+          - "enable"                                          # Administratively up
+      when: ansible_device_type == "phone"
+
+    #---------------------------------------------------------------------------
+    # Apply port security (GLOBAL context, not under interface)
+    # NOTE: "no port-security" first clears legacy config on old switches
+    #---------------------------------------------------------------------------
+    - name: CASE 1 | Port security (GLOBAL/parent)
+      community.network.aruba_config:
+        lines:
+          - "no port-security {{ ansible_port_number }}"              # Clear existing config
+          - "port-security {{ ansible_port_number }} learn-mode static"    # Static MAC learning
+          - "port-security {{ ansible_port_number }} address-limit 1"      # Max 1 device
+          - "port-security {{ ansible_port_number }} action send-disable"  # Disable on violation
+      when: ansible_device_type == "phone"
+
+    ###########################################################################
+    # CASE 2: NON-PHONE DEVICE ONLY CONFIGURATION
+    ###########################################################################
+    # Scenario: Data device (PC, printer, server, etc.) connected to port
+    #           No phone is connected to this port
+    #
+    # Configuration Applied:
+    # - VLAN: Untagged (Data VLAN from vlan_mapping[device_type])
+    # - Port Security: 1 MAC address allowed (static learning)
+    # - Port State: Enabled
+    # - Speed: Auto-negotiation
+    #
+    # VLAN Behavior:
+    # - Device receives untagged traffic on its assigned data VLAN
+    # - No tagged VLAN (no phone support needed)
+    #
+    # Device Types Supported:
+    # - pc, laptop, printer, server, camera, access_point, etc.
+    # - Each device type maps to a specific VLAN ID in vlan_mapping.yml
+    #
+    # Port Security Details:
+    # - learn-mode static: Prevents dynamic MAC learning
+    # - address-limit 1: Only one device allowed
+    # - action send-disable: Port disabled if violation detected
+    # - "no port-security" first: Clears any legacy config
+    ###########################################################################
+    
+    #---------------------------------------------------------------------------
+    # Read current configuration
+    #---------------------------------------------------------------------------
+    - name: CASE 2 | Read current interface config
+      community.network.aruba_command:
+        commands:
+          - "show running-config interface {{ ansible_port_number }}"
+      register: c2_iface_cmd
+      when:
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
+
+    - name: CASE 2 | Extract interface text
+      set_fact:
+        c2_text: "{{ (c2_iface_cmd.stdout[0] | default('')) | lower }}"
+      when:
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
+
+    #---------------------------------------------------------------------------
+    # Parse VLANs and define desired state
+    #---------------------------------------------------------------------------
+    - name: CASE 2 | Parse existing VLAN membership
+      set_fact:
+        c2_old_untagged: "{{ c2_text | regex_findall('untagged\\s+vlan\\s+(\\d+)') | unique }}"
+        c2_old_tagged:   "{{ c2_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
+        c2_desired_untagged: ["{{ vlan_mapping[ansible_device_type] | string }}"]  # Device VLAN
+        c2_desired_tagged: []  # No tagged VLANs for data-only devices
+      when:
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
+
+    #---------------------------------------------------------------------------
+    # Calculate VLAN removals
+    #---------------------------------------------------------------------------
+    - name: CASE 2 | Compute removal lists
+      set_fact:
+        c2_remove_untagged: >-
+          {{ c2_old_untagged
+             if cleanup_strategy == 'wipe'
+             else (c2_old_untagged | map('string') | list) | difference(c2_desired_untagged) }}
+        c2_remove_tagged: >-
+          {{ c2_old_tagged
+             if cleanup_strategy == 'wipe'
+             else (c2_old_tagged | map('string') | list) | difference(c2_desired_tagged) }}
+      when:
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
+
+    #---------------------------------------------------------------------------
+    # Remove conflicting UNTAGGED VLANs
+    #---------------------------------------------------------------------------
+    - name: CASE 2 | Remove old UNTAGGED VLAN(s)
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "no untagged vlan {{ item }}"
+      loop: "{{ c2_remove_untagged | default([]) }}"
+      when:
+        - (c2_remove_untagged | default([])) | length > 0
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
+
+    #---------------------------------------------------------------------------
+    # Remove any TAGGED VLANs (not needed for data-only devices)
+    #---------------------------------------------------------------------------
+    - name: CASE 2 | Remove old TAGGED VLAN(s)
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "no tagged vlan {{ item }}"
+      loop: "{{ c2_remove_tagged | default([]) }}"
+      when:
+        - (c2_remove_tagged | default([])) | length > 0
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
+
+    #---------------------------------------------------------------------------
+    # Apply device-specific interface configuration
+    #---------------------------------------------------------------------------
+    - name: CASE 2 | Apply non-phone interface config
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "name {{ interface_description | quote }}"              # Descriptive port name
+          - "untagged vlan {{ vlan_mapping[ansible_device_type] }}" # Data VLAN (untagged)
+          - "speed-duplex auto"                                     # Auto-negotiation
+          - "enable"                                                # Administratively up
+      when:
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
+
+    #---------------------------------------------------------------------------
+    # Apply port security
+    #---------------------------------------------------------------------------
+    - name: CASE 2 | Port security (GLOBAL/parent)
+      community.network.aruba_config:
+        lines:
+          - "no port-security {{ ansible_port_number }}"              # Clear existing config
+          - "port-security {{ ansible_port_number }} learn-mode static"    # Static MAC learning
+          - "port-security {{ ansible_port_number }} address-limit 1"      # Max 1 device
+          - "port-security {{ ansible_port_number }} action send-disable"  # Disable on violation
+      when:
+        - ansible_device_type != "phone"
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
+
+    ###########################################################################
+    # CASE 3: DEVICE + PHONE CONFIGURATION (DUAL DEVICES)
+    ###########################################################################
+    # Scenario: Data device (PC) with VoIP phone daisy-chained through it
+    #           Common in office deployments where phone has pass-through port
+    #
+    # Configuration Applied:
+    # - VLAN: Untagged (Data VLAN for PC) + Tagged (Voice VLAN for phone)
+    # - Port Security: 2 MAC addresses allowed (PC + phone)
+    # - Port State: Enabled
+    # - Speed: Auto-negotiation
+    #
+    # VLAN Behavior:
+    # - PC receives untagged traffic on data VLAN
+    # - Phone receives tagged traffic on voice VLAN (802.1Q)
+    # - Phone passes PC traffic through unmodified
+    #
+    # Topology:
+    # Switch Port --- Phone (with pass-through) --- PC
+    #                  |
+    #            Voice VLAN (tagged)
+    #                  |
+    #            Data VLAN (untagged, passed to PC)
+    #
+    # Port Security Details:
+    # - learn-mode static: Prevents dynamic MAC learning
+    # - address-limit 2: Two devices allowed (phone + PC)
+    # - action send-disable: Port disabled if more than 2 MACs detected
+    # - "no port-security" first: Clears any legacy config
+    #
+    # IMPORTANT: No VLAN cleanup performed in this case - direct application only
+    ###########################################################################
+    - name: CASE 3 | Device with phone | Apply config
+      when: ansible_second_device_type == "phone"
+      block:
+        #-----------------------------------------------------------------------
+        # Apply interface configuration with both VLANs
+        #-----------------------------------------------------------------------
+        - name: CASE 3 | Apply interface config
+          community.network.aruba_config:
+            parents: "interface {{ ansible_port_number }}"
+            lines:
+              - "name {{ interface_description | quote }}"                   # Descriptive name
+              - "untagged vlan {{ vlan_mapping[ansible_device_type] }}"      # Data VLAN (PC)
+              - "tagged vlan {{ vlan_mapping.phone }}"                       # Voice VLAN (phone)
+              - "speed-duplex auto"                                          # Auto-negotiation
+              - "enable"                                                     # Administratively up
+
+        #-----------------------------------------------------------------------
+        # Apply port security allowing 2 devices
+        #-----------------------------------------------------------------------
+        - name: CASE 3 | Port security (GLOBAL/parent; allow 2)
+          community.network.aruba_config:
+            lines:
+              - "no port-security {{ ansible_port_number }}"              # Clear existing config
+              - "port-security {{ ansible_port_number }} learn-mode static"    # Static MAC learning
+              - "port-security {{ ansible_port_number }} address-limit 2"      # Max 2 devices (PC + phone)
+              - "port-security {{ ansible_port_number }} action send-disable"  # Disable on violation
+
+    ###########################################################################
+    # CASE 4: DISABLED PORT CONFIGURATION
+    ###########################################################################
+    # Scenario: Port is not in use / should be administratively disabled
+    #           Used for unused ports, decommissioned jacks, or security purposes
+    #
+    # Configuration Applied:
+    # - VLAN: None (all VLANs removed - not shown but implied)
+    # - Port Security: 1 MAC address limit maintained (defense in depth)
+    # - Port State: DISABLED (administratively down)
+    # - Speed: Auto-negotiation (for when port is re-enabled)
+    # - Interface Name: "_disable" suffix appended
+    #
+    # Security Rationale:
+    # - Administratively down prevents unauthorized device connection
+    # - Port security still configured as additional security layer
+    # - Descriptive name clearly indicates disabled status
+    #
+    # Use Cases:
+    # - Unused wall ports in rooms
+    # - Decommissioned network jacks
+    # - Security policy requiring unused ports disabled
+    # - Temporary disconnection during maintenance
+    #
+    # Port Security Details (defense in depth):
+    # - learn-mode static: Prevents MAC learning if accidentally enabled
+    # - address-limit 1: Limits to one device if port enabled
+    # - action send-disable: Additional security if port enabled
+    # - "no port-security" first: Clears any legacy config
+    #
+    # NOTE: Port security on disabled ports provides extra security layer
+    #       in case port is administratively enabled without full reconfiguration
+    ###########################################################################
+    - name: CASE 4 | None device | Apply config
+      when:
+        - ansible_device_type == "none"
+        - ansible_second_device_type == "none"
+      block:
+        #-----------------------------------------------------------------------
+        # Apply disabled port configuration with "_disable" suffix
+        # Checks if suffix already exists to avoid duplication
+        #-----------------------------------------------------------------------
+        - name: CASE 4 | Apply interface config (with _disable suffix)
+          community.network.aruba_config:
+            parents: "interface {{ ansible_port_number }}"
+            lines:
+              - >-
+                name {{
+                  (
+                    interface_description
+                    if (interface_description is search('(_disable)$'))
+                    else (interface_description ~ '_disable')
+                  ) | quote
+                }}
+              - "speed-duplex auto"        # Auto-negotiation (for future use)
+              - "disable"                  # Administratively DOWN
+
+        #-----------------------------------------------------------------------
+        # Apply port security as defense in depth
+        #-----------------------------------------------------------------------
+        - name: CASE 4 | Port security (GLOBAL/parent; keep 1)
+          community.network.aruba_config:
+            lines:
+              - "no port-security {{ ansible_port_number }}"              # Clear existing config
+              - "port-security {{ ansible_port_number }} learn-mode static"    # Static MAC learning
+              - "port-security {{ ansible_port_number }} address-limit 1"      # Max 1 device (if enabled)
+              - "port-security {{ ansible_port_number }} action send-disable"  # Disable on violation
+
+    ###########################################################################
+    # FINAL TASK: SAVE CONFIGURATION TO SWITCH MEMORY
+    ###########################################################################
+    # Purpose: Persist all configuration changes to non-volatile memory (NVRAM)
+    #          Without this, changes are lost on switch reboot
+    #
+    # Command: "write memory" (also known as "copy running-config startup-config")
+    #
+    # IMPORTANT: This saves the entire running-config, not just the changes
+    #            made by this playbook. Ensure no other admin is making
+    #            conflicting changes simultaneously.
+    ###########################################################################
+    - name: Save configuration
+      community.network.aruba_command:
+        commands:
+          - "write memory"
