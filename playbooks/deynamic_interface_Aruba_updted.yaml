@@ -1,5 +1,5 @@
 ################################################################################
-# ARUBA SWITCH DYNAMIC INTERFACE CONFIGURATION PLAYBOOK (2-LINE PORT-SECURITY)
+# ARUBA SWITCH INTERFACE CONFIG (SIMPLE, CORRECT CONDITIONS)
 ################################################################################
 
 #------------------------------------------------------------------------------
@@ -116,20 +116,45 @@
           - "Primary Device Type: {{ ansible_device_type }}"
           - "Second Device Type: {{ ansible_second_device_type }}"
 
+    # Normalization: compute booleans for simple, correct branching
+    - name: Compute mode flags
+      set_fact:
+        is_phone_only: >-
+          {{
+            (ansible_device_type == 'phone' and ansible_second_device_type in ['none','phone'])
+            or
+            (ansible_device_type == 'none' and ansible_second_device_type == 'phone')
+          }}
+        is_device_only: >-
+          {{
+            (ansible_device_type not in ['phone','none'])
+            and (ansible_second_device_type == 'none')
+          }}
+        is_device_plus_phone: >-
+          {{
+            (ansible_device_type not in ['phone','none'])
+            and (ansible_second_device_type == 'phone')
+          }}
+        is_disabled: >-
+          {{
+            (ansible_device_type == 'none')
+            and (ansible_second_device_type == 'none')
+          }}
+
     ############################################################################
-    # CASE 1: PHONE ONLY (tagged phone VLAN)
+    # CASE 1: PHONE ONLY (covers: phone+none, phone+phone, none+phone)
     ############################################################################
     - name: CASE 1 | Read current interface config
       community.network.aruba_command:
         commands:
           - "show running-config interface {{ ansible_port_number }}"
       register: c1_iface_cmd
-      when: ansible_device_type == "phone"
+      when: is_phone_only | bool
 
     - name: CASE 1 | Extract interface text
       set_fact:
         c1_text: "{{ (c1_iface_cmd.stdout[0] | default('')) | lower }}"
-      when: ansible_device_type == "phone"
+      when: is_phone_only | bool
 
     - name: CASE 1 | Parse existing VLAN membership
       set_fact:
@@ -137,7 +162,7 @@
         c1_old_tagged:   "{{ c1_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
         c1_desired_untagged: []
         c1_desired_tagged: ["{{ vlan_mapping.phone | string }}"]
-      when: ansible_device_type == "phone"
+      when: is_phone_only | bool
 
     - name: CASE 1 | Compute removal lists
       set_fact:
@@ -149,7 +174,7 @@
           {{ c1_old_tagged
              if cleanup_strategy == 'wipe'
              else (c1_old_tagged | map('string') | list) | difference(c1_desired_tagged) }}
-      when: ansible_device_type == "phone"
+      when: is_phone_only | bool
 
     - name: CASE 1 | Remove old UNTAGGED VLAN(s)
       community.network.aruba_config:
@@ -158,7 +183,7 @@
           - "no untagged vlan {{ item }}"
       loop: "{{ c1_remove_untagged | default([]) }}"
       when:
-        - ansible_device_type == "phone"
+        - is_phone_only | bool
         - (c1_remove_untagged | default([])) | length > 0
 
     - name: CASE 1 | Remove old TAGGED VLAN(s)
@@ -168,7 +193,7 @@
           - "no tagged vlan {{ item }}"
       loop: "{{ c1_remove_tagged | default([]) }}"
       when:
-        - ansible_device_type == "phone"
+        - is_phone_only | bool
         - (c1_remove_tagged | default([])) | length > 0
 
     - name: CASE 1 | Apply phone-only interface config
@@ -179,14 +204,14 @@
           - "tagged vlan {{ vlan_mapping.phone }}"
           - "speed-duplex auto"
           - "enable"
-      when: ansible_device_type == "phone"
+      when: is_phone_only | bool
 
     - name: CASE 1 | Port security (2-line form, limit 1)
       community.network.aruba_config:
         lines:
           - "no port-security {{ ansible_port_number }}"
           - "port-security {{ ansible_port_number }} learn-mode static address-limit 1 action send-disable"
-      when: ansible_device_type == "phone"
+      when: is_phone_only | bool
 
     ############################################################################
     # CASE 2: NON-PHONE DEVICE ONLY (untagged device VLAN)
@@ -196,18 +221,12 @@
         commands:
           - "show running-config interface {{ ansible_port_number }}"
       register: c2_iface_cmd
-      when:
-        - ansible_device_type != "phone"
-        - ansible_device_type != "none"
-        - ansible_second_device_type == "none"
+      when: is_device_only | bool
 
     - name: CASE 2 | Extract interface text
       set_fact:
         c2_text: "{{ (c2_iface_cmd.stdout[0] | default('')) | lower }}"
-      when:
-        - ansible_device_type != "phone"
-        - ansible_device_type != "none"
-        - ansible_second_device_type == "none"
+      when: is_device_only | bool
 
     - name: CASE 2 | Parse existing VLAN membership
       set_fact:
@@ -215,10 +234,7 @@
         c2_old_tagged:   "{{ c2_text | regex_findall('tagged\\s+vlan\\s+(\\d+)') | unique }}"
         c2_desired_untagged: ["{{ vlan_mapping[ansible_device_type] | string }}"]
         c2_desired_tagged: []
-      when:
-        - ansible_device_type != "phone"
-        - ansible_device_type != "none"
-        - ansible_second_device_type == "none"
+      when: is_device_only | bool
 
     - name: CASE 2 | Compute removal lists
       set_fact:
@@ -230,10 +246,7 @@
           {{ c2_old_tagged
              if cleanup_strategy == 'wipe'
              else (c2_old_tagged | map('string') | list) | difference(c2_desired_tagged) }}
-      when:
-        - ansible_device_type != "phone"
-        - ansible_device_type != "none"
-        - ansible_second_device_type == "none"
+      when: is_device_only | bool
 
     - name: CASE 2 | Remove old UNTAGGED VLAN(s)
       community.network.aruba_config:
@@ -242,10 +255,8 @@
           - "no untagged vlan {{ item }}"
       loop: "{{ c2_remove_untagged | default([]) }}"
       when:
+        - is_device_only | bool
         - (c2_remove_untagged | default([])) | length > 0
-        - ansible_device_type != "phone"
-        - ansible_device_type != "none"
-        - ansible_second_device_type == "none"
 
     - name: CASE 2 | Remove old TAGGED VLAN(s)
       community.network.aruba_config:
@@ -254,10 +265,8 @@
           - "no tagged vlan {{ item }}"
       loop: "{{ c2_remove_tagged | default([]) }}"
       when:
+        - is_device_only | bool
         - (c2_remove_tagged | default([])) | length > 0
-        - ansible_device_type != "phone"
-        - ansible_device_type != "none"
-        - ansible_second_device_type == "none"
 
     - name: CASE 2 | Apply non-phone interface config
       community.network.aruba_config:
@@ -267,26 +276,20 @@
           - "untagged vlan {{ vlan_mapping[ansible_device_type] }}"
           - "speed-duplex auto"
           - "enable"
-      when:
-        - ansible_device_type != "phone"
-        - ansible_device_type != "none"
-        - ansible_second_device_type == "none"
+      when: is_device_only | bool
 
     - name: CASE 2 | Port security (2-line form, limit 1)
       community.network.aruba_config:
         lines:
           - "no port-security {{ ansible_port_number }}"
           - "port-security {{ ansible_port_number }} learn-mode static address-limit 1 action send-disable"
-      when:
-        - ansible_device_type != "phone"
-        - ansible_device_type != "none"
-        - ansible_second_device_type == "none"
+      when: is_device_only | bool
 
     ############################################################################
     # CASE 3: DEVICE + PHONE (untagged device VLAN + tagged phone VLAN)
     ############################################################################
     - name: CASE 3 | Device with phone | Apply config
-      when: ansible_second_device_type == "phone"
+      when: is_device_plus_phone | bool
       block:
         - name: CASE 3 | Apply interface config
           community.network.aruba_config:
@@ -308,9 +311,7 @@
     # CASE 4: NONE (ADMIN DOWN)
     ############################################################################
     - name: CASE 4 | None device | Apply config
-      when:
-        - ansible_device_type == "none"
-        - ansible_second_device_type == "none"
+      when: is_disabled | bool
       block:
         - name: CASE 4 | Apply interface config (with _disable suffix)
           community.network.aruba_config:
