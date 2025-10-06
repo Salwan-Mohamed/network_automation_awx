@@ -1,10 +1,62 @@
 ################################################################################
-# ARUBA SWITCH INTERFACE CONFIG (SIMPLE, CORRECT CONDITIONS)
+# README (Tiny)
+# ------------------------------------------------------------------------------
+# Purpose
+#   Automate ArubaOS-Switch access port configuration based on room/port and
+#   device types, supporting four cases:
+#     1) PHONE ONLY                 -> tagged phone VLAN + port-security(1)
+#     2) DEVICE ONLY (non-phone)    -> untagged device VLAN + port-security(1)
+#     3) DEVICE + PHONE             -> untagged device VLAN + tagged phone VLAN
+#                                      + port-security(2)
+#     4) NONE (admin down)          -> disable + name suffix "_disable"
+#
+# Inputs (typical -e extra-vars)
+#   room: "4211"
+#   port_number: "2/9"                          # wall point or direct port
+#   device_type: "pc"|"printer"|"camera"|"phone"|"none"
+#   second_device_type: "phone"|"none"
+#   device_name: "TeacherPC"                    # optional friendly label
+#   second_device_name: "DeskPhone"             # optional friendly label
+#
+# Required vars files (relative paths)
+#   ../vars/switch_mapping.yml      # { switch_name: [rooms...] }
+#   ../vars/interface_name.yml      # { interface_descriptions: {room: "Label"} }
+#   ../vars/vlan_mapping.yml        # { pc: 10, printer: 20, camera: 30, phone: 40, ... }
+#   ../vars/wall_point_mapping.yml  # { "WP-2/9": "2/9", ... } or direct passthrough
+#
+# Example invocations
+#   # PHONE ONLY (phone+none, phone+phone, or none+phone)
+#   ansible-playbook playbooks/port_config.yml -e room=4211 -e port_number=2/9 \
+#     -e device_type=phone -e second_device_type=none
+#
+#   # DEVICE ONLY (PC on data VLAN)
+#   ansible-playbook playbooks/port_config.yml -e room=4211 -e port_number=2/9 \
+#     -e device_type=pc -e second_device_type=none
+#
+#   # DEVICE + PHONE (PC + IP phone)
+#   ansible-playbook playbooks/port_config.yml -e room=4211 -e port_number=2/9 \
+#     -e device_type=pc -e second_device_type=phone
+#
+#   # NONE (admin down)
+#   ansible-playbook playbooks/port_config.yml -e room=4211 -e port_number=2/9 \
+#     -e device_type=none -e second_device_type=none
+#
+# Notes
+#   - Port-security uses the 2-line form requested:
+#       no port-security <PORT>
+#       port-security <PORT> learn-mode static address-limit <N> action send-disable
+#     With N = 1 (single endpoint) or N = 2 (device + phone).
+#   - cleanup_strategy=wipe resets VLAN membership before applying desired state.
 ################################################################################
 
-#------------------------------------------------------------------------------
+
+# ==============================================================================
 # Play 1: Resolve target switch & port + build final interface name
-#------------------------------------------------------------------------------
+#   - Discover switch by room membership
+#   - Normalize wall point label to actual port
+#   - Create a clean interface description with optional device suffixes
+#   - Add a dynamic host to the inventory for Play 2 to configure
+# ==============================================================================
 - name: Resolve Switch Based on Room Number and Convert Wall Point
   hosts: localhost
   gather_facts: false
@@ -15,6 +67,7 @@
     - ../vars/wall_point_mapping.yml
 
   tasks:
+    # Identify the switch that owns this room via switch_mapping (switch -> [rooms])
     - name: Find Switch for Given Room
       set_fact:
         switch_name: "{{ item.key }}"
@@ -24,11 +77,13 @@
         - room | length > 0
         - (room | lower) in (item.value | map('lower') | list)
 
+    # Fail fast if room is not mapped to any switch
     - name: Fail if No Matching Switch is Found
       fail:
         msg: "No switch found for room {{ room }}. Check switch_mapping.yml"
       when: switch_name is not defined
 
+    # If port_number is a wall-point label and exists in mapping, translate it
     - name: Convert wall point label to actual switch port (if mapping exists)
       set_fact:
         actual_port_number: "{{ wall_point_mapping[port_number] }}"
@@ -36,6 +91,7 @@
         - port_number is defined
         - port_number in wall_point_mapping
 
+    # Otherwise, treat port_number as the literal switch port
     - name: Use direct port number if not in wall point mapping
       set_fact:
         actual_port_number: "{{ port_number }}"
@@ -43,11 +99,13 @@
         - port_number is defined
         - port_number not in wall_point_mapping
 
+    # Ensure we have a valid target port for Play 2
     - name: Fail if Port Number Not Provided
       fail:
         msg: "Port number is required"
       when: actual_port_number is not defined or (actual_port_number | string) == ""
 
+    # Build a base, human-friendly interface label (with room-aware fallback)
     - name: Compute base interface label
       set_fact:
         interface_base_label: >-
@@ -60,11 +118,13 @@
             else 'Port_WP' ~ (port_number | string)
           }}
 
+    # Prefer friendly device_name(s) if provided; fall back to device_type(s)
     - name: Build device labels
       set_fact:
         device_label_1: "{{ (device_name | default(device_type | default('')) | string) | trim | lower }}"
         device_label_2: "{{ (second_device_name | default(second_device_type | default('')) | string) | trim | lower }}"
 
+    # Build suffix list (filter out empty/none)
     - name: Build device label suffix list
       set_fact:
         device_suffix_list: >-
@@ -73,6 +133,7 @@
             + ([device_label_2] if device_label_2 not in ['','none'] else [])
           }}
 
+    # Compose final interface description (base + optional suffixes)
     - name: Build final interface description with device suffixes
       set_fact:
         interface_description_final: >-
@@ -80,6 +141,7 @@
             interface_base_label
           }}{{ '_' ~ (device_suffix_list | join('_')) if (device_suffix_list | length) > 0 else '' }}
 
+    # Add a dynamic host with all variables Play 2 needs
     - name: Add Resolved Switch to Inventory
       add_host:
         name: "{{ switch_name }}"
@@ -88,25 +150,29 @@
         interface_description: "{{ interface_description_final }}"
         ansible_device_type: "{{ device_type | default('none') }}"
         ansible_second_device_type: "{{ second_device_type | default('none') }}"
-        # ansible_host: "{{ switch_ip_mapping[switch_name] }}"
+        # ansible_host: "{{ switch_ip_mapping[switch_name] }}"  # optional mgmt IP mapping
 
 
-#------------------------------------------------------------------------------
+# ==============================================================================
 # Play 2: Configure the ArubaOS-Switch interface
-#------------------------------------------------------------------------------
+#   - Read current config & compute differences (safe reconciliation)
+#   - Apply one of four cases (phone-only, device-only, device+phone, none)
+#   - Persist configuration
+# ==============================================================================
 - name: Configure Aruba Switch Port Based on Device Type and Configuration Cases
   hosts: dynamic_switches
   gather_facts: false
   connection: network_cli
   vars:
     ansible_network_os: community.network.aruba
-    cleanup_strategy: wipe        # wipe | safe
+    cleanup_strategy: wipe        # wipe | safe (wipe = remove all VLANs before apply)
   collections:
     - community.network
   vars_files:
     - ../vars/vlan_mapping.yml
 
   tasks:
+    # Quick visibility of what will be configured on which port
     - name: Debug (switch/port/input)
       debug:
         msg:
@@ -116,7 +182,7 @@
           - "Primary Device Type: {{ ansible_device_type }}"
           - "Second Device Type: {{ ansible_second_device_type }}"
 
-    # Normalization: compute booleans for simple, correct branching
+    # Compute normalized booleans for clear, correct branching
     - name: Compute mode flags
       set_fact:
         is_phone_only: >-
@@ -142,7 +208,13 @@
           }}
 
     ############################################################################
-    # CASE 1: PHONE ONLY (covers: phone+none, phone+phone, none+phone)
+    # CASE 1: PHONE ONLY
+    #   Triggers for this case:
+    #     - device_type=phone & second_device_type in [none, phone]
+    #     - device_type=none  & second_device_type=phone
+    #   Desired state:
+    #     - VLANs: tagged phone VLAN only
+    #     - Port security: limit 1 (2-line form)
     ############################################################################
     - name: CASE 1 | Read current interface config
       community.network.aruba_command:
@@ -214,7 +286,11 @@
       when: is_phone_only | bool
 
     ############################################################################
-    # CASE 2: NON-PHONE DEVICE ONLY (untagged device VLAN)
+    # CASE 2: NON-PHONE DEVICE ONLY
+    #   Trigger: device_type != phone|none AND second_device_type == none
+    #   Desired state:
+    #     - VLANs: untagged device VLAN
+    #     - Port security: limit 1 (2-line form)
     ############################################################################
     - name: CASE 2 | Read current interface config
       community.network.aruba_command:
@@ -286,7 +362,11 @@
       when: is_device_only | bool
 
     ############################################################################
-    # CASE 3: DEVICE + PHONE (untagged device VLAN + tagged phone VLAN)
+    # CASE 3: DEVICE + PHONE
+    #   Trigger: device_type != phone|none AND second_device_type == phone
+    #   Desired state:
+    #     - VLANs: untagged device VLAN + tagged phone VLAN
+    #     - Port security: limit 2 (2-line form)
     ############################################################################
     - name: CASE 3 | Device with phone | Apply config
       when: is_device_plus_phone | bool
@@ -309,6 +389,11 @@
 
     ############################################################################
     # CASE 4: NONE (ADMIN DOWN)
+    #   Trigger: device_type == none AND second_device_type == none
+    #   Desired state:
+    #     - Port disabled
+    #     - Name annotated with "_disable" (idempotent)
+    #     - Port security: limit 1 (2-line form)
     ############################################################################
     - name: CASE 4 | None device | Apply config
       when: is_disabled | bool
@@ -334,6 +419,7 @@
               - "no port-security {{ ansible_port_number }}"
               - "port-security {{ ansible_port_number }} learn-mode static address-limit 1 action send-disable"
 
+    # Persist configuration to startup
     - name: Save configuration
       community.network.aruba_command:
         commands:
