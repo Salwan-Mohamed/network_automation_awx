@@ -95,7 +95,8 @@
   connection: network_cli
   vars:
     ansible_network_os: community.network.aruba
-    cleanup_strategy: wipe    # wipe | safe (applies to Case 1 & 2 VLAN cleanup)
+    cleanup_strategy: wipe        # wipe | safe
+    mcp_installed: true           # <- MCP present in the environment
   collections:
     - community.network
   vars_files:
@@ -110,6 +111,11 @@
           - "Interface Final Description: {{ interface_description }}"
           - "Primary Device Type: {{ ansible_device_type }}"
           - "Second Device Type: {{ ansible_second_device_type }}"
+
+    - name: MCP status note (no-op)
+      debug:
+        msg: "MCP is marked as installed (mcp_installed={{ mcp_installed | bool }}). No extra MCP config applied in this play."
+      when: mcp_installed | bool
 
     ###########################################################################
     # CASE 1: Phone only (tagged = phone VLAN)
@@ -179,6 +185,7 @@
     - name: CASE 1 | Port security (GLOBAL/parent)
       community.network.aruba_config:
         lines:
+          - "no port-security {{ ansible_port_number }}"
           - "port-security {{ ansible_port_number }} learn-mode static"
           - "port-security {{ ansible_port_number }} address-limit 1"
           - "port-security {{ ansible_port_number }} action send-disable"
@@ -271,6 +278,7 @@
     - name: CASE 2 | Port security (GLOBAL/parent)
       community.network.aruba_config:
         lines:
+          - "no port-security {{ ansible_port_number }}"
           - "port-security {{ ansible_port_number }} learn-mode static"
           - "port-security {{ ansible_port_number }} address-limit 1"
           - "port-security {{ ansible_port_number }} action send-disable"
@@ -298,6 +306,7 @@
         - name: CASE 3 | Port security (GLOBAL/parent; allow 2)
           community.network.aruba_config:
             lines:
+              - "no port-security {{ ansible_port_number }}"
               - "port-security {{ ansible_port_number }} learn-mode static"
               - "port-security {{ ansible_port_number }} address-limit 2"
               - "port-security {{ ansible_port_number }} action send-disable"
@@ -328,6 +337,7 @@
         - name: CASE 4 | Port security (GLOBAL/parent; keep 1)
           community.network.aruba_config:
             lines:
+              - "no port-security {{ ansible_port_number }}"
               - "port-security {{ ansible_port_number }} learn-mode static"
               - "port-security {{ ansible_port_number }} address-limit 1"
               - "port-security {{ ansible_port_number }} action send-disable"
