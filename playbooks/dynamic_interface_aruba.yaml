@@ -1,5 +1,5 @@
 ---
-# Play 1: Resolve target switch & port from room/wall point
+# Play 1: Resolve target switch & port + build final interface name
 - name: Resolve Switch Based on Room Number and Convert Wall Point
   hosts: localhost
   gather_facts: false
@@ -43,9 +43,10 @@
         msg: "Port number is required"
       when: actual_port_number is not defined or (actual_port_number | string) == ""
 
-    - name: Get Interface Description (from table, else fallback)
+    # Base label from table, else fallback
+    - name: Compute base interface label
       set_fact:
-        interface_description: >-
+        interface_base_label: >-
           {{
             interface_descriptions.get(
               room,
@@ -55,16 +56,37 @@
             else 'Port_WP' ~ (port_number | string)
           }}
 
+    # Build device labels from survey inputs (fallback to device_type vars)
+    - name: Build device labels
+      set_fact:
+        device_label_1: "{{ (device_name | default(device_type | default('')) | string) | trim | lower }}"
+        device_label_2: "{{ (second_device_name | default(second_device_type | default('')) | string) | trim | lower }}"
+
+    # Build suffix list once labels exist
+    - name: Build device label suffix list
+      set_fact:
+        device_suffix_list: >-
+          {{
+            ([device_label_1] if device_label_1 not in ['','none'] else [])
+            + ([device_label_2] if device_label_2 not in ['','none'] else [])
+          }}
+
+    - name: Build final interface description with device suffixes
+      set_fact:
+        interface_description_final: >-
+          {{
+            interface_base_label
+          }}{{ '_' ~ (device_suffix_list | join('_')) if (device_suffix_list | length) > 0 else '' }}
+
     - name: Add Resolved Switch to Inventory
       add_host:
         name: "{{ switch_name }}"
         groups: dynamic_switches
         ansible_port_number: "{{ actual_port_number }}"
-        interface_description: "{{ interface_description }}"
+        interface_description: "{{ interface_description_final }}"
         ansible_device_type: "{{ device_type | default('none') }}"
         ansible_second_device_type: "{{ second_device_type | default('none') }}"
-        # If your inventory doesn't already have the IP/host for switch_name, also add:
-        # ansible_host: "{{ switch_ip_mapping[switch_name] }}"
+        # ansible_host: "{{ switch_ip_mapping[switch_name] }}"   # <- uncomment if needed
 
 # Play 2: Configure the ArubaOS-Switch interface
 - name: Configure Aruba Switch Port Based on Device Type and Configuration Cases
@@ -72,10 +94,8 @@
   gather_facts: false
   connection: network_cli
   vars:
-    # Ensures correct driver for AOS-S so interface context is handled properly
     ansible_network_os: community.network.aruba
-    # Cleanup strategy before applying new VLANs (Case 1 & 2 only)
-    cleanup_strategy: wipe    # wipe | safe
+    cleanup_strategy: wipe    # wipe | safe (applies to Case 1 & 2 VLAN cleanup)
   collections:
     - community.network
   vars_files:
@@ -87,7 +107,7 @@
         msg:
           - "Switch: {{ inventory_hostname }}"
           - "Port: {{ ansible_port_number }}"
-          - "Interface Description: {{ interface_description }}"
+          - "Interface Final Description: {{ interface_description }}"
           - "Primary Device Type: {{ ansible_device_type }}"
           - "Second Device Type: {{ ansible_second_device_type }}"
 
@@ -156,7 +176,7 @@
           - "enable"
       when: ansible_device_type == "phone"
 
-    - name: CASE 1 | Port security (GLOBAL/parent; not under interface)
+    - name: CASE 1 | Port security (GLOBAL/parent)
       community.network.aruba_config:
         lines:
           - "port-security {{ ansible_port_number }} learn-mode static"
@@ -248,7 +268,7 @@
         - ansible_device_type != "none"
         - ansible_second_device_type == "none"
 
-    - name: CASE 2 | Port security (GLOBAL/parent; not under interface)
+    - name: CASE 2 | Port security (GLOBAL/parent)
       community.network.aruba_config:
         lines:
           - "port-security {{ ansible_port_number }} learn-mode static"
@@ -283,18 +303,25 @@
               - "port-security {{ ansible_port_number }} action send-disable"
 
     ###########################################################################
-    # CASE 4: None (admin down)
+    # CASE 4: None (admin down) + append "_disable" to name
     ###########################################################################
     - name: CASE 4 | None device | Apply config
       when:
         - ansible_device_type == "none"
         - ansible_second_device_type == "none"
       block:
-        - name: CASE 4 | Apply interface config
+        - name: CASE 4 | Apply interface config (with _disable suffix)
           community.network.aruba_config:
             parents: "interface {{ ansible_port_number }}"
             lines:
-              - "name {{ interface_description | quote }}"
+              - >-
+                name {{
+                  (
+                    interface_description
+                    if (interface_description is search('(_disable)$'))
+                    else (interface_description ~ '_disable')
+                  ) | quote
+                }}
               - "speed-duplex auto"
               - "disable"
 
