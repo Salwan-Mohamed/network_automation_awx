@@ -1,309 +1,65 @@
-################################################################################
-# ARUBA SWITCH DYNAMIC INTERFACE CONFIGURATION PLAYBOOK (FIXED VERSION)
-#
-# FIXES APPLIED:
-# - Replaced aruba_config with aruba_command (aruba_config has JSON parsing bugs)
-# - Uses raw CLI commands for configuration (more reliable)
-# - Maintains all four configuration scenarios
-# - Improved room matching with debugging
-#
-# GOAL
-# ----
-# 1) Discover the correct switch based on a room number.
-# 2) Translate a wall point label (e.g., "WP-2/9") to an actual switch port.
-# 3) Build a clean, consistent interface description using room/port + devices.
-# 4) Configure an ArubaOS-Switch interface for four scenarios:
-#      CASE 1: Phone only  (tagged phone VLAN)
-#      CASE 2: Single non-phone device only (untagged device VLAN)
-#      CASE 3: Device + phone (untagged device VLAN + tagged phone VLAN)
-#      CASE 4: None (admin down, add "_disable" suffix)
-#
-# INPUTS (typical extra-vars)
-# ---------------------------
-# room:                "ng36"           # room number to find switch
-# port_number:         "2/9"             # wall point OR direct switch port number
-# device_type:         "pc" | "printer" | "camera" | "none" | "phone"
-# second_device_type:  "phone" | "none"  # second device if present (phone scenario)
-# device_name:         "TeacherPC"       # optional custom label; overrides type
-# second_device_name:  "DeskPhone"       # optional second label; overrides type
-#
-# VARS FILES (required mappings)
-# ------------------------------
-# ../vars/switch_mapping.yml     # { switch_name: [rooms...] }
-# ../vars/interface_name.yml     # interface_descriptions: { room: "Your_Label" }
-# ../vars/vlan_mapping.yml       # { pc: 10, printer: 20, camera: 30, phone: 40, ... }
-# ../vars/wall_point_mapping.yml # { "WP-2/9": "2/9", "WP-1/3": "1/3", ... }
-################################################################################
+########################################
+# Global variables (ALL hosts)
+########################################
+[all:vars]
+ansible_connection=network_cli
+ansible_network_os=community.network.aruba
+ansible_user=ansibleadmin
+ansible_password=An$12345
+ansible_become=true
+ansible_become_method=enable
+ansible_command_timeout=120
+ansible_connect_timeout=60
+ansible_ssh_common_args=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+ansible_python_interpreter=/usr/bin/python3
 
 
-#------------------------------------------------------------------------------
-# Play 1: Resolve target switch & port + build final interface name
-#------------------------------------------------------------------------------
-- name: Resolve Switch Based on Room Number and Convert Wall Point
-  hosts: localhost
-  gather_facts: false
-  vars_files:
-    - ../vars/switch_mapping.yml
-    - ../vars/interface_name.yml
-    - ../vars/vlan_mapping.yml
-    - ../vars/wall_point_mapping.yml
-
-  tasks:
-    ###########################################################################
-    # DEBUGGING: Show input variables
-    ###########################################################################
-    - name: Debug - Show all input variables
-      debug:
-        msg:
-          - "Room (raw): '{{ room | default('NOT_PROVIDED') }}'"
-          - "Room type: {{ room | type_debug | default('undefined') }}"
-          - "Port number: '{{ port_number | default('NOT_PROVIDED') }}'"
-          - "Device type: '{{ device_type | default('NOT_PROVIDED') }}'"
-          - "Second device: '{{ second_device_type | default('NOT_PROVIDED') }}'"
-
-    ###########################################################################
-    # NORMALIZE: Clean up room variable (trim whitespace, lowercase)
-    ###########################################################################
-    - name: Normalize room variable
-      set_fact:
-        room_normalized: "{{ (room | default('') | string | trim | lower) }}"
-      when: room is defined
-
-    - name: Debug - Show normalized room
-      debug:
-        msg: "Normalized room: '{{ room_normalized | default('NOT_SET') }}'"
-
-    ###########################################################################
-    # TASK: Identify the switch that owns this room
-    ###########################################################################
-    - name: Find Switch for Given Room
-      set_fact:
-        switch_name: "{{ item.key }}"
-      loop: "{{ switch_mapping | dict2items }}"
-      when:
-        - room_normalized is defined
-        - room_normalized | length > 0
-        - room_normalized in (item.value | map('lower') | list)
-
-    - name: Debug - Show found switch
-      debug:
-        msg: "Found switch: {{ switch_name | default('NO_MATCH') }}"
-
-    # Defensive check: fail early if room isn't mapped to any switch.
-    - name: Fail if No Matching Switch is Found
-      fail:
-        msg: |
-          No switch found for room '{{ room_normalized | default(room | default('UNDEFINED')) }}'.
-          
-          Available switches in switch_mapping.yml:
-          {{ switch_mapping.keys() | list | to_nice_yaml }}
-          
-          Please check:
-          1. Room format matches entries in switch_mapping.yml
-          2. Room is spelled correctly
-          3. Room exists in one of the switch mappings
-      when: switch_name is not defined
-
-    ###########################################################################
-    # TASK: Normalize the provided port (wall point vs direct port)
-    ###########################################################################
-    - name: Convert wall point label to actual switch port (if mapping exists)
-      set_fact:
-        actual_port_number: "{{ wall_point_mapping[port_number] }}"
-      when:
-        - port_number is defined
-        - port_number in wall_point_mapping
-
-    - name: Use direct port number if not in wall point mapping
-      set_fact:
-        actual_port_number: "{{ port_number }}"
-      when:
-        - port_number is defined
-        - port_number not in wall_point_mapping
-
-    - name: Debug - Show port resolution
-      debug:
-        msg: "Port: {{ port_number | default('NOT_PROVIDED') }} -> {{ actual_port_number | default('NOT_RESOLVED') }}"
-
-    # Defensive check: ensure we have a valid port for subsequent config.
-    - name: Fail if Port Number Not Provided
-      fail:
-        msg: "Port number is required but not provided or is empty"
-      when: actual_port_number is not defined or (actual_port_number | string) == ""
-
-    ###########################################################################
-    # TASK: Build a base, human-friendly interface label
-    ###########################################################################
-    - name: Compute base interface label
-      set_fact:
-        interface_base_label: >-
-          {{
-            interface_descriptions.get(
-              room_normalized,
-              'Port_' ~ (room_normalized | string) ~ '_WP' ~ (port_number | string)
-            )
-            if room_normalized is defined and room_normalized is not none and (room_normalized | string) | length > 0
-            else 'Port_WP' ~ (port_number | string)
-          }}
-
-    ###########################################################################
-    # TASK: Create device suffixes for the interface name
-    ###########################################################################
-    - name: Build device labels
-      set_fact:
-        device_label_1: "{{ (device_name | default(device_type | default('')) | string) | trim | lower }}"
-        device_label_2: "{{ (second_device_name | default(second_device_type | default('')) | string) | trim | lower }}"
-
-    - name: Build device label suffix list
-      set_fact:
-        device_suffix_list: >-
-          {{
-            ([device_label_1] if device_label_1 not in ['','none'] else [])
-            + ([device_label_2] if device_label_2 not in ['','none'] else [])
-          }}
-
-    - name: Build final interface description with device suffixes
-      set_fact:
-        interface_description_final: >-
-          {{
-            interface_base_label
-          }}{{ '_' ~ (device_suffix_list | join('_')) if (device_suffix_list | length) > 0 else '' }}
-
-    - name: Debug - Show final interface description
-      debug:
-        msg: "Final interface name: '{{ interface_description_final }}'"
-
-    ###########################################################################
-    # TASK: Inject a dynamic host so Play 2 can target the real switch
-    ###########################################################################
-    - name: Add Resolved Switch to Inventory
-      add_host:
-        name: "{{ switch_name }}"
-        groups: dynamic_switches
-        ansible_port_number: "{{ actual_port_number }}"
-        interface_description: "{{ interface_description_final }}"
-        ansible_device_type: "{{ device_type | default('none') }}"
-        ansible_second_device_type: "{{ second_device_type | default('none') }}"
+########################################
+# Distribution Switches - North
+########################################
+[distswitch_N]
+aruba_dist_n ansible_host=10.2.127.1
 
 
-#------------------------------------------------------------------------------
-# Play 2: Configure the ArubaOS-Switch interface using aruba_command
-#------------------------------------------------------------------------------
-- name: Configure Aruba Switch Port Based on Device Type
-  hosts: dynamic_switches
-  gather_facts: false
-  connection: network_cli
-  vars:
-    ansible_network_os: community.network.aruba
-    ansible_deprecation_warnings: false
-  collections:
-    - community.network
-  vars_files:
-    - ../vars/vlan_mapping.yml
+########################################
+# Distribution Switches - Dorms
+########################################
+[distswitch_Dorms]
+aruba_dist_dorms ansible_host=10.16.127.1
 
-  tasks:
-    - name: Debug (switch/port/input)
-      debug:
-        msg:
-          - "Switch: {{ inventory_hostname }}"
-          - "Port: {{ ansible_port_number }}"
-          - "Interface Final Description: {{ interface_description }}"
-          - "Primary Device Type: {{ ansible_device_type }}"
-          - "Second Device Type: {{ ansible_second_device_type }}"
 
-    ############################################################################
-    # CASE 1: PHONE ONLY
-    ############################################################################
-    - name: CASE 1 | Configure phone-only interface
-      community.network.aruba_command:
-        commands:
-          - configure terminal
-          - interface {{ ansible_port_number }}
-          - name "{{ interface_description }}"
-          - no untagged vlan
-          - tagged vlan {{ vlan_mapping.phone }}
-          - speed-duplex auto
-          - enable
-          - exit
-          - no port-security {{ ansible_port_number }}
-          - port-security {{ ansible_port_number }} learn-mode static
-          - port-security {{ ansible_port_number }} address-limit 1
-          - port-security {{ ansible_port_number }} action send-disable
-          - exit
-          - write memory
-      when: ansible_device_type == "phone" and ansible_second_device_type == "none"
+########################################
+# Access Switches - North Campus
+########################################
+[aruba_switches_N]
+aruba_11 ansible_host=10.2.127.11
+aruba_12 ansible_host=10.2.127.12
+aruba_13 ansible_host=10.2.127.13
+aruba_14 ansible_host=10.2.127.14
+aruba_15 ansible_host=10.2.127.15
+aruba_16 ansible_host=10.2.127.16
+aruba_17 ansible_host=10.2.127.17
+aruba_18 ansible_host=10.2.127.18
 
-    ############################################################################
-    # CASE 2: NON-PHONE DEVICE ONLY
-    ############################################################################
-    - name: CASE 2 | Configure non-phone device interface
-      community.network.aruba_command:
-        commands:
-          - configure terminal
-          - interface {{ ansible_port_number }}
-          - name "{{ interface_description }}"
-          - no tagged vlan
-          - untagged vlan {{ vlan_mapping[ansible_device_type] }}
-          - speed-duplex auto
-          - enable
-          - exit
-          - no port-security {{ ansible_port_number }}
-          - port-security {{ ansible_port_number }} learn-mode static
-          - port-security {{ ansible_port_number }} address-limit 1
-          - port-security {{ ansible_port_number }} action send-disable
-          - exit
-          - write memory
-      when:
-        - ansible_device_type != "phone"
-        - ansible_device_type != "none"
-        - ansible_second_device_type == "none"
 
-    ############################################################################
-    # CASE 3: DEVICE + PHONE
-    ############################################################################
-    - name: CASE 3 | Configure device + phone interface
-      community.network.aruba_command:
-        commands:
-          - configure terminal
-          - interface {{ ansible_port_number }}
-          - name "{{ interface_description }}"
-          - untagged vlan {{ vlan_mapping[ansible_device_type] }}
-          - tagged vlan {{ vlan_mapping.phone }}
-          - speed-duplex auto
-          - enable
-          - exit
-          - no port-security {{ ansible_port_number }}
-          - port-security {{ ansible_port_number }} learn-mode static
-          - port-security {{ ansible_port_number }} address-limit 2
-          - port-security {{ ansible_port_number }} action send-disable
-          - exit
-          - write memory
-      when:
-        - ansible_device_type != "none"
-        - ansible_second_device_type == "phone"
+########################################
+# Access Switches - Dorms
+########################################
+[aruba_switches_Dorms]
+aruba_FH1 ansible_host=10.16.127.11
+aruba_FH2 ansible_host=10.16.127.12
+aruba_FH3 ansible_host=10.16.127.13
+aruba_FH4 ansible_host=10.16.127.14
+aruba_FH5 ansible_host=10.16.127.15
+aruba_FH6 ansible_host=10.16.127.16
+aruba_FH7 ansible_host=10.16.127.17
+aruba_food_court ansible_host=10.16.127.18
+aruba_GYM ansible_host=10.16.127.19
+aruba_gate_dorm ansible_host=10.16.127.20
 
-    ############################################################################
-    # CASE 4: NONE (ADMIN DOWN)
-    ############################################################################
-    - name: CASE 4 | Configure disabled interface
-      community.network.aruba_command:
-        commands:
-          - configure terminal
-          - interface {{ ansible_port_number }}
-          - name "{{ interface_description }}_disable"
-          - speed-duplex auto
-          - disable
-          - exit
-          - no port-security {{ ansible_port_number }}
-          - port-security {{ ansible_port_number }} learn-mode static
-          - port-security {{ ansible_port_number }} address-limit 1
-          - port-security {{ ansible_port_number }} action send-disable
-          - exit
-          - write memory
-      when:
-        - ansible_device_type == "none"
-        - ansible_second_device_type == "none"
 
-    - name: Configuration Complete
-      debug:
-        msg: "✅ Interface {{ ansible_port_number }} on {{ inventory_hostname }} configured successfully!"
+########################################
+# Aruba Controller
+########################################
+[aruba_controller_master]
+aruba_controller ansible_host=10.1.126.50
