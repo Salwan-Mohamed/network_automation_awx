@@ -1,0 +1,13 @@
+- name: Test vars_files only
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - vars/test_vars.yml
+
+  tasks:
+    - name: Debug vars
+      debug:
+        msg:
+          - "message={{ test_message }}"
+          - "number={{ test_number }}"
