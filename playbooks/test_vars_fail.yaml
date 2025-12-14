@@ -1,14 +1,18 @@
-- name: Test include_vars
+- name: AWX execution context test
   hosts: localhost
   gather_facts: false
 
   tasks:
-    - name: Load vars explicitly
-      ansible.builtin.include_vars:
-        file: vars/test_vars.yml
+    - name: Show current working directory
+      command: pwd
+      register: pwd_out
 
-    - name: Debug vars
+    - name: List project root
+      command: ls -la
+      register: ls_out
+
+    - name: Print results
       debug:
         msg:
-          - "message={{ test_message }}"
-          - "number={{ test_number }}"
+          - "PWD={{ pwd_out.stdout }}"
+          - "FILES={{ ls_out.stdout_lines }}"
