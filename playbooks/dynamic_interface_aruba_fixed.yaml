@@ -1,40 +1,47 @@
 ---
 ###############################################################################
-# PLAY 1 — Resolve switch + port (runs on localhost)
+# PLAY 1 — Resolve switch and port (Survey-Driven)
 ###############################################################################
 - name: Resolve switch and port
   hosts: localhost
   gather_facts: false
 
+  vars:
+    room: "{{ room | default('') }}"
+    port_number: "{{ port_number | default('') }}"
+    device_type: "{{ device_type | default('none') }}"
+    second_device_type: "{{ second_device_type | default('none') }}"
+
   vars_files:
     - ../vars/switch_mapping.yml
     - ../vars/switch_ip_mapping.yml
+    - ../vars/wall_point_mapping.yml
     - ../vars/vlan_mapping.yml
 
-  vars:
-    room: "{{ room | lower }}"
-    port_number: "{{ port_number | string }}"
-
   tasks:
+    - name: Validate room input
+      fail:
+        msg: "Room must be provided (Survey or -e room=...)"
+      when: room | length == 0
 
     - name: Resolve switch from room
       set_fact:
         switch_name: "{{ item.key }}"
       loop: "{{ switch_mapping | dict2items }}"
-      when: room in (item.value | map('lower') | list)
+      when: room | lower in (item.value | map('lower') | list)
 
     - name: Fail if switch not resolved
       fail:
-        msg: "Room {{ room }} not found in switch mapping"
+        msg: "Room {{ room }} not mapped to any switch"
       when: switch_name is not defined
 
     - name: Resolve actual port number
       set_fact:
-        actual_port_number: "{{ port_number[0] }}/{{ port_number[1:] }}"
+        actual_port_number: "{{ wall_point_mapping.get(port_number, port_number) }}"
 
     - name: Build interface description
       set_fact:
-        interface_description: "N-G-{{ room | upper | replace('NG','') }}_{{ device_type }}"
+        interface_description: "N-G-{{ room | upper }}_{{ device_type }}"
 
     - name: Add resolved switch to runtime inventory
       add_host:
@@ -42,79 +49,68 @@
         groups: dynamic_switches
         ansible_host: "{{ switch_ip_mapping[switch_name] }}"
         ansible_connection: network_cli
-        ansible_network_os: ios
+        ansible_network_os: arubaos_switch
         ansible_user: "{{ ansible_user }}"
         ansible_password: "{{ ansible_password }}"
-        ansible_become: true
-        ansible_become_method: enable
         ansible_port_number: "{{ actual_port_number }}"
         ansible_device_type: "{{ device_type }}"
-        ansible_second_device_type: "{{ second_device_type | default('none') }}"
+        ansible_second_device_type: "{{ second_device_type }}"
         interface_description: "{{ interface_description }}"
-
-    - debug:
-        msg:
-          - "Switch: {{ switch_name }}"
-          - "IP: {{ switch_ip_mapping[switch_name] }}"
-          - "Port: {{ actual_port_number }}"
-          - "Device: {{ device_type }}"
-          - "Second device: {{ second_device_type | default('none') }}"
-
 
 ###############################################################################
 # PLAY 2 — Configure Aruba switch port
 ###############################################################################
-- name: Configure Aruba switch port (PRODUCTION)
+- name: Configure Aruba switch port
   hosts: dynamic_switches
   gather_facts: false
-
-  vars_files:
-    - ../vars/vlan_mapping.yml
+  connection: network_cli
 
   tasks:
-
-    - name: Read current interface config
-      ansible.netcommon.cli_command:
-        command: "show running-config interface {{ ansible_port_number }}"
-      register: iface_before
-
     - name: Ensure interface enabled
-      ansible.netcommon.cli_config:
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
         lines:
-          - "interface {{ ansible_port_number }}"
           - "enable"
 
-    - name: Remove existing VLANs
-      ansible.netcommon.cli_config:
+    - name: Clear VLANs
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
         lines:
-          - "interface {{ ansible_port_number }}"
           - "no untagged vlan"
           - "no tagged vlan"
 
-    - name: Apply non-phone device config
-      when: ansible_device_type != "none"
-      ansible.netcommon.cli_config:
+    - name: Apply device only
+      when:
+        - ansible_device_type != "none"
+        - ansible_second_device_type == "none"
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
         lines:
-          - "interface {{ ansible_port_number }}"
           - "name {{ interface_description }}"
           - "untagged vlan {{ vlan_mapping[ansible_device_type] }}"
           - "speed-duplex auto"
           - "enable"
 
-    - name: Apply device + phone config
+    - name: Apply device + phone
       when: ansible_second_device_type == "phone"
-      ansible.netcommon.cli_config:
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
         lines:
-          - "interface {{ ansible_port_number }}"
+          - "name {{ interface_description }}"
+          - "untagged vlan {{ vlan_mapping[ansible_device_type] }}"
           - "tagged vlan {{ vlan_mapping.phone }}"
+          - "speed-duplex auto"
+          - "enable"
 
-    - name: Disable port if device_type none
+    - name: Disable port
       when: ansible_device_type == "none"
-      ansible.netcommon.cli_config:
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
         lines:
-          - "interface {{ ansible_port_number }}"
+          - "name {{ interface_description }}_DISABLED"
           - "disable"
 
-    - name: Save configuration
-      ansible.netcommon.cli_command:
-        command: "write memory"
+    - name: Save config
+      community.network.aruba_command:
+        commands:
+          - "write memory"
