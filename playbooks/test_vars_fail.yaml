@@ -17,3 +17,4 @@
           - "PWD => {{ pwd_out.stdout }}"
           - "FILES =>"
           - "{{ ls_out.stdout_lines }}"
+
