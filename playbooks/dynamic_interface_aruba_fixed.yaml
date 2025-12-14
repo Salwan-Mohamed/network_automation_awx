@@ -1,47 +1,99 @@
 ---
 ###############################################################################
-# PLAY 1 — Resolve switch and port (Survey-Driven)
+# PLAY 1 — Resolve switch, port, description (LOCALHOST)
 ###############################################################################
 - name: Resolve switch and port
   hosts: localhost
   gather_facts: false
 
-  vars:
-    room: "{{ room | default('') }}"
-    port_number: "{{ port_number | default('') }}"
-    device_type: "{{ device_type | default('none') }}"
-    second_device_type: "{{ second_device_type | default('none') }}"
-
   vars_files:
-    - ../vars/switch_mapping.yml
-    - ../vars/switch_ip_mapping.yml
-    - ../vars/wall_point_mapping.yml
-    - ../vars/vlan_mapping.yml
+    - vars/switch_mapping.yml
+    - vars/switch_ip_mapping.yml
+    - vars/interface_name.yml
+    - vars/wall_point_mapping.yml
 
   tasks:
+    ###########################################################################
+    # INPUT VALIDATION
+    ###########################################################################
     - name: Validate room input
       fail:
-        msg: "Room must be provided (Survey or -e room=...)"
-      when: room | length == 0
+        msg: "Room must be provided via AWX Survey or -e room="
+      when: room is not defined or room | length == 0
 
+    - name: Validate port_number input
+      fail:
+        msg: "port_number must be provided via AWX Survey or -e port_number="
+      when: port_number is not defined or port_number | length == 0
+
+    - name: DEBUG | Survey Inputs
+      debug:
+        msg:
+          - "room={{ room }}"
+          - "port_number={{ port_number }}"
+          - "device_type={{ device_type | default('none') }}"
+          - "second_device_type={{ second_device_type | default('none') }}"
+
+    ###########################################################################
+    # SWITCH RESOLUTION
+    ###########################################################################
     - name: Resolve switch from room
       set_fact:
         switch_name: "{{ item.key }}"
       loop: "{{ switch_mapping | dict2items }}"
       when: room | lower in (item.value | map('lower') | list)
 
+    - name: DEBUG | switch_name
+      debug:
+        var: switch_name
+
     - name: Fail if switch not resolved
       fail:
-        msg: "Room {{ room }} not mapped to any switch"
+        msg: "No switch mapped for room {{ room }}"
       when: switch_name is not defined
 
-    - name: Resolve actual port number
+    ###########################################################################
+    # PORT RESOLUTION
+    ###########################################################################
+    - name: Resolve actual port number (wall mapping)
       set_fact:
         actual_port_number: "{{ wall_point_mapping.get(port_number, port_number) }}"
 
+    - name: DEBUG | actual_port_number
+      debug:
+        var: actual_port_number
+
+    ###########################################################################
+    # INTERFACE DESCRIPTION
+    ###########################################################################
+    - name: Build interface base label
+      set_fact:
+        interface_base_label: >-
+          {{
+            interface_descriptions.get(
+              room,
+              'Room_' ~ room ~ '_Port_' ~ actual_port_number
+            )
+          }}
+
     - name: Build interface description
       set_fact:
-        interface_description: "N-G-{{ room | upper }}_{{ device_type }}"
+        interface_description: >-
+          {{
+            interface_base_label
+            ~ ( '_' ~ device_type if device_type != 'none' else '' )
+          }}
+
+    - name: DEBUG | interface_description
+      debug:
+        var: interface_description
+
+    ###########################################################################
+    # ADD HOST TO RUNTIME INVENTORY
+    ###########################################################################
+    - name: DEBUG | switch_ip_mapping
+      debug:
+        var: switch_ip_mapping
 
     - name: Add resolved switch to runtime inventory
       add_host:
@@ -50,37 +102,81 @@
         ansible_host: "{{ switch_ip_mapping[switch_name] }}"
         ansible_connection: network_cli
         ansible_network_os: arubaos_switch
-        ansible_user: "{{ ansible_user }}"
-        ansible_password: "{{ ansible_password }}"
+        ansible_user: "{{ ansible_user | default('ansibleadmin') }}"
+        ansible_password: "{{ ansible_password | default('An$12345') }}"
         ansible_port_number: "{{ actual_port_number }}"
-        ansible_device_type: "{{ device_type }}"
-        ansible_second_device_type: "{{ second_device_type }}"
+        ansible_device_type: "{{ device_type | default('none') }}"
+        ansible_second_device_type: "{{ second_device_type | default('none') }}"
         interface_description: "{{ interface_description }}"
 
+    - name: DEBUG | Dynamic host vars
+      debug:
+        msg:
+          - "HOST={{ switch_name }}"
+          - "IP={{ switch_ip_mapping[switch_name] }}"
+          - "PORT={{ actual_port_number }}"
+          - "DESC={{ interface_description }}"
+
 ###############################################################################
-# PLAY 2 — Configure Aruba switch port
+# PLAY 2 — Configure Aruba switch interface
 ###############################################################################
-- name: Configure Aruba switch port
+- name: Configure Aruba switch port (DEBUG MODE)
   hosts: dynamic_switches
   gather_facts: false
   connection: network_cli
 
   tasks:
+    ###########################################################################
+    # PRECHECK
+    ###########################################################################
+    - name: DEBUG | Host variables
+      debug:
+        msg:
+          - "inventory_hostname={{ inventory_hostname }}"
+          - "ansible_host={{ ansible_host }}"
+          - "ansible_port_number={{ ansible_port_number }}"
+          - "device_type={{ ansible_device_type }}"
+          - "second_device_type={{ ansible_second_device_type }}"
+          - "description={{ interface_description }}"
+
+    ###########################################################################
+    # READ CURRENT CONFIG
+    ###########################################################################
+    - name: Read current interface config
+      community.network.aruba_command:
+        commands:
+          - "show running-config interface {{ ansible_port_number }}"
+      register: iface_before
+
+    - name: DEBUG | Interface BEFORE
+      debug:
+        var: iface_before.stdout[0]
+
+    ###########################################################################
+    # ENSURE PORT ENABLED
+    ###########################################################################
     - name: Ensure interface enabled
       community.network.aruba_config:
         parents: "interface {{ ansible_port_number }}"
         lines:
           - "enable"
 
-    - name: Clear VLANs
+    ###########################################################################
+    # CLEAN VLAN CONFIG
+    ###########################################################################
+    - name: Remove existing VLANs
       community.network.aruba_config:
         parents: "interface {{ ansible_port_number }}"
         lines:
           - "no untagged vlan"
           - "no tagged vlan"
 
-    - name: Apply device only
+    ###########################################################################
+    # APPLY CONFIG — NON PHONE
+    ###########################################################################
+    - name: Apply non-phone device config
       when:
+        - ansible_device_type != "phone"
         - ansible_device_type != "none"
         - ansible_second_device_type == "none"
       community.network.aruba_config:
@@ -91,7 +187,10 @@
           - "speed-duplex auto"
           - "enable"
 
-    - name: Apply device + phone
+    ###########################################################################
+    # APPLY CONFIG — DEVICE + PHONE
+    ###########################################################################
+    - name: Apply device + phone config
       when: ansible_second_device_type == "phone"
       community.network.aruba_config:
         parents: "interface {{ ansible_port_number }}"
@@ -102,15 +201,20 @@
           - "speed-duplex auto"
           - "enable"
 
-    - name: Disable port
+    ###########################################################################
+    # DISABLE PORT
+    ###########################################################################
+    - name: Disable port if device_type none
       when: ansible_device_type == "none"
       community.network.aruba_config:
         parents: "interface {{ ansible_port_number }}"
         lines:
-          - "name {{ interface_description }}_DISABLED"
           - "disable"
 
-    - name: Save config
+    ###########################################################################
+    # SAVE CONFIG
+    ###########################################################################
+    - name: Save configuration
       community.network.aruba_command:
         commands:
           - "write memory"
