@@ -1,65 +1,109 @@
-########################################
-# Global variables (ALL hosts)
-########################################
-[all:vars]
-ansible_connection=network_cli
-ansible_network_os=community.network.aruba
-ansible_user=ansibleadmin
-ansible_password=An$12345
-ansible_become=true
-ansible_become_method=enable
-ansible_command_timeout=120
-ansible_connect_timeout=60
-ansible_ssh_common_args=-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-ansible_python_interpreter=/usr/bin/python3
+# Play 2: Configure the ArubaOS-Switch interface
+- name: Configure Aruba Switch Port Based on Device Type
+  hosts: dynamic_switches
+  gather_facts: false
+  connection: network_cli
+  collections:
+    - ansible.netcommon
+    - community.network
 
+  vars:
+    ansible_network_os: community.network.aruba
+    cleanup_strategy: wipe   # wipe | safe
 
-########################################
-# Distribution Switches - North
-########################################
-[distswitch_N]
-aruba_dist_n ansible_host=10.2.127.1
+  tasks:
+    - name: Debug (switch/port/input)
+      debug:
+        msg:
+          - "Switch: {{ inventory_hostname }}"
+          - "Port: {{ ansible_port_number }}"
+          - "Interface Description: {{ interface_description }}"
+          - "Primary Device Type: {{ ansible_device_type }}"
+          - "Second Device Type: {{ ansible_second_device_type }}"
 
+    ###########################################################################
+    # CASE 1: Phone only
+    ###########################################################################
+    - name: CASE 1 | Read interface config
+      ansible.netcommon.cli_command:
+        command: "show running-config interface {{ ansible_port_number }}"
+      register: c1_iface_cmd
+      when: ansible_device_type == "phone"
 
-########################################
-# Distribution Switches - Dorms
-########################################
-[distswitch_Dorms]
-aruba_dist_dorms ansible_host=10.16.127.1
+    - name: CASE 1 | Parse VLANs
+      set_fact:
+        c1_text: "{{ c1_iface_cmd.stdout | lower }}"
+        c1_old_untagged: "{{ c1_iface_cmd.stdout | regex_findall('untagged vlan (\\d+)') }}"
+        c1_old_tagged: "{{ c1_iface_cmd.stdout | regex_findall('tagged vlan (\\d+)') }}"
+        c1_desired_untagged: []
+        c1_desired_tagged: ["{{ vlan_mapping.phone }}"]
+      when: ansible_device_type == "phone"
 
+    - name: CASE 1 | Apply phone config
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "name {{ interface_description | quote }}"
+          - "tagged vlan {{ vlan_mapping.phone }}"
+          - "speed-duplex auto"
+          - "enable"
+      when: ansible_device_type == "phone"
 
-########################################
-# Access Switches - North Campus
-########################################
-[aruba_switches_N]
-aruba_11 ansible_host=10.2.127.11
-aruba_12 ansible_host=10.2.127.12
-aruba_13 ansible_host=10.2.127.13
-aruba_14 ansible_host=10.2.127.14
-aruba_15 ansible_host=10.2.127.15
-aruba_16 ansible_host=10.2.127.16
-aruba_17 ansible_host=10.2.127.17
-aruba_18 ansible_host=10.2.127.18
+    ###########################################################################
+    # CASE 2: Non-phone only
+    ###########################################################################
+    - name: CASE 2 | Read interface config
+      ansible.netcommon.cli_command:
+        command: "show running-config interface {{ ansible_port_number }}"
+      register: c2_iface_cmd
+      when:
+        - ansible_device_type not in ["phone", "none"]
+        - ansible_second_device_type == "none"
 
+    - name: CASE 2 | Apply non-phone config
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "name {{ interface_description | quote }}"
+          - "untagged vlan {{ vlan_mapping[ansible_device_type] }}"
+          - "speed-duplex auto"
+          - "enable"
+      when:
+        - ansible_device_type not in ["phone", "none"]
+        - ansible_second_device_type == "none"
 
-########################################
-# Access Switches - Dorms
-########################################
-[aruba_switches_Dorms]
-aruba_FH1 ansible_host=10.16.127.11
-aruba_FH2 ansible_host=10.16.127.12
-aruba_FH3 ansible_host=10.16.127.13
-aruba_FH4 ansible_host=10.16.127.14
-aruba_FH5 ansible_host=10.16.127.15
-aruba_FH6 ansible_host=10.16.127.16
-aruba_FH7 ansible_host=10.16.127.17
-aruba_food_court ansible_host=10.16.127.18
-aruba_GYM ansible_host=10.16.127.19
-aruba_gate_dorm ansible_host=10.16.127.20
+    ###########################################################################
+    # CASE 3: Device + Phone
+    ###########################################################################
+    - name: CASE 3 | Device + phone
+      when: ansible_second_device_type == "phone"
+      block:
+        - community.network.aruba_config:
+            parents: "interface {{ ansible_port_number }}"
+            lines:
+              - "name {{ interface_description | quote }}"
+              - "untagged vlan {{ vlan_mapping[ansible_device_type] }}"
+              - "tagged vlan {{ vlan_mapping.phone }}"
+              - "speed-duplex auto"
+              - "enable"
 
+    ###########################################################################
+    # CASE 4: None (disable)
+    ###########################################################################
+    - name: CASE 4 | Disable port
+      when:
+        - ansible_device_type == "none"
+        - ansible_second_device_type == "none"
+      block:
+        - community.network.aruba_config:
+            parents: "interface {{ ansible_port_number }}"
+            lines:
+              - "name {{ interface_description ~ '_disable' | quote }}"
+              - "disable"
 
-########################################
-# Aruba Controller
-########################################
-[aruba_controller_master]
-aruba_controller ansible_host=10.1.126.50
+    ###########################################################################
+    # SAVE CONFIG
+    ###########################################################################
+    - name: Save configuration
+      ansible.netcommon.cli_command:
+        command: "write memory"
