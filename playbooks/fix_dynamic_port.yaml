@@ -1,0 +1,209 @@
+---
+###############################################################################
+# PLAY 1: Resolve target switch, port, and interface description
+###############################################################################
+- name: Resolve Switch Based on Room Number and Convert Wall Point
+  hosts: localhost
+  gather_facts: false
+
+  # 🔒 HARDEN ALL SURVEY VARIABLES
+  vars:
+    room: "{{ room | default('') | string | trim }}"
+    port_number: "{{ port_number | default('') | string | trim }}"
+    device_type: "{{ device_type | default('none') | string | trim | lower }}"
+    second_device_type: "{{ second_device_type | default('none') | string | trim | lower }}"
+
+  vars_files:
+    - ../vars/switch_mapping.yml
+    - ../vars/interface_name.yml
+    - ../vars/vlan_mapping.yml
+    - ../vars/wall_point_mapping.yml
+
+  tasks:
+
+    ###########################################################################
+    # Validate survey input
+    ###########################################################################
+    - name: Validate required inputs
+      fail:
+        msg: "Both room and port_number must be provided via AWX survey"
+      when:
+        - room == ''
+        - port_number == ''
+
+    ###########################################################################
+    # Resolve switch
+    ###########################################################################
+    - name: Find switch for given room
+      set_fact:
+        switch_name: "{{ item.key }}"
+      loop: "{{ switch_mapping | dict2items }}"
+      when: room | lower in (item.value | map('lower') | list)
+
+    - name: Fail if no matching switch found
+      fail:
+        msg: "No switch found for room {{ room }} (check switch_mapping.yml)"
+      when: switch_name is not defined
+
+    ###########################################################################
+    # Resolve port number
+    ###########################################################################
+    - name: Resolve actual port number
+      set_fact:
+        actual_port_number: >-
+          {{
+            wall_point_mapping[port_number]
+            if port_number in wall_point_mapping
+            else port_number
+          }}
+
+    ###########################################################################
+    # Build base interface label
+    ###########################################################################
+    - name: Build base interface label
+      set_fact:
+        interface_base_label: >-
+          {{
+            interface_descriptions.get(
+              room,
+              'Port_' ~ room ~ '_WP' ~ port_number
+            )
+          }}
+
+    ###########################################################################
+    # Build final interface description
+    ###########################################################################
+    - name: Build interface description
+      set_fact:
+        interface_description: >-
+          {{
+            interface_base_label
+            + (
+              '_' +
+              ([device_type, second_device_type]
+               | reject('equalto', 'none')
+               | reject('equalto', '')
+               | join('_'))
+              if device_type != 'none' or second_device_type != 'none'
+              else ''
+            )
+          }}
+
+    ###########################################################################
+    # Add dynamic host
+    ###########################################################################
+    - name: Add resolved switch to inventory
+      add_host:
+        name: "{{ switch_name }}"
+        groups: dynamic_switches
+        ansible_port_number: "{{ actual_port_number }}"
+        interface_description: "{{ interface_description }}"
+        ansible_device_type: "{{ device_type }}"
+        ansible_second_device_type: "{{ second_device_type }}"
+        # ansible_host: "{{ switch_ip_mapping[switch_name] }}"
+
+###############################################################################
+# PLAY 2: Configure Aruba switch port
+###############################################################################
+- name: Configure Aruba Switch Port Based on Device Type
+  hosts: dynamic_switches
+  gather_facts: false
+  connection: network_cli
+
+  vars:
+    ansible_network_os: community.network.aruba
+    cleanup_strategy: wipe        # wipe | safe
+    mcp_installed: true
+
+  collections:
+    - community.network
+
+  vars_files:
+    - ../vars/vlan_mapping.yml
+
+  tasks:
+
+    - name: Debug resolved input
+      debug:
+        msg:
+          - "Switch: {{ inventory_hostname }}"
+          - "Port: {{ ansible_port_number }}"
+          - "Interface Description: {{ interface_description }}"
+          - "Primary Device: {{ ansible_device_type }}"
+          - "Secondary Device: {{ ansible_second_device_type }}"
+
+    ###########################################################################
+    # CASE 1: Phone only
+    ###########################################################################
+    - name: CASE 1 | Read interface config
+      community.network.aruba_command:
+        commands:
+          - "show running-config interface {{ ansible_port_number }}"
+      register: iface_cmd
+      when: ansible_device_type == "phone"
+
+    - name: CASE 1 | Parse VLANs
+      set_fact:
+        old_untagged: "{{ iface_cmd.stdout[0] | regex_findall('untagged\\s+vlan\\s+(\\d+)') }}"
+        old_tagged: "{{ iface_cmd.stdout[0] | regex_findall('tagged\\s+vlan\\s+(\\d+)') }}"
+      when: ansible_device_type == "phone"
+
+    - name: CASE 1 | Apply config
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "name {{ interface_description | quote }}"
+          - "tagged vlan {{ vlan_mapping.phone }}"
+          - "speed-duplex auto"
+          - "enable"
+      when: ansible_device_type == "phone"
+
+    ###########################################################################
+    # CASE 2: Non-phone device only
+    ###########################################################################
+    - name: CASE 2 | Apply config
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "name {{ interface_description | quote }}"
+          - "untagged vlan {{ vlan_mapping[ansible_device_type] }}"
+          - "speed-duplex auto"
+          - "enable"
+      when:
+        - ansible_device_type not in ['phone', 'none']
+        - ansible_second_device_type == "none"
+
+    ###########################################################################
+    # CASE 3: Device + Phone
+    ###########################################################################
+    - name: CASE 3 | Device + phone
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "name {{ interface_description | quote }}"
+          - "untagged vlan {{ vlan_mapping[ansible_device_type] }}"
+          - "tagged vlan {{ vlan_mapping.phone }}"
+          - "speed-duplex auto"
+          - "enable"
+      when: ansible_second_device_type == "phone"
+
+    ###########################################################################
+    # CASE 4: None (admin down)
+    ###########################################################################
+    - name: CASE 4 | Disable port
+      community.network.aruba_config:
+        parents: "interface {{ ansible_port_number }}"
+        lines:
+          - "name {{ interface_description ~ '_disable' | quote }}"
+          - "disable"
+      when:
+        - ansible_device_type == "none"
+        - ansible_second_device_type == "none"
+
+    ###########################################################################
+    # Save configuration
+    ###########################################################################
+    - name: Save configuration
+      community.network.aruba_command:
+        commands:
+          - "write memory"
