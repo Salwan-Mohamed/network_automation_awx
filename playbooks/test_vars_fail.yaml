@@ -11,8 +11,9 @@
       command: ls -la
       register: ls_out
 
-    - name: Print results
+    - name: DEBUG | Print execution context
       debug:
         msg:
-          - "PWD={{ pwd_out.stdout }}"
-          - "FILES={{ ls_out.stdout_lines }}"
+          - "PWD = {{ pwd_out.stdout }}"
+          - "PROJECT FILES:"
+          - "{{ ls_out.stdout_lines }}"
