@@ -5,6 +5,7 @@
 # - Replaced aruba_config with aruba_command (aruba_config has JSON parsing bugs)
 # - Uses raw CLI commands for configuration (more reliable)
 # - Maintains all four configuration scenarios
+# - Improved room matching with debugging
 #
 # GOAL
 # ----
@@ -19,7 +20,7 @@
 #
 # INPUTS (typical extra-vars)
 # ---------------------------
-# room:                "4211"            # room number to find switch
+# room:                "ng36"           # room number to find switch
 # port_number:         "2/9"             # wall point OR direct switch port number
 # device_type:         "pc" | "printer" | "camera" | "none" | "phone"
 # second_device_type:  "phone" | "none"  # second device if present (phone scenario)
@@ -48,20 +49,64 @@
     - ../vars/wall_point_mapping.yml
 
   tasks:
+    ###########################################################################
+    # DEBUGGING: Show input variables
+    ###########################################################################
+    - name: Debug - Show all input variables
+      debug:
+        msg:
+          - "Room (raw): '{{ room | default('NOT_PROVIDED') }}'"
+          - "Room type: {{ room | type_debug | default('undefined') }}"
+          - "Port number: '{{ port_number | default('NOT_PROVIDED') }}'"
+          - "Device type: '{{ device_type | default('NOT_PROVIDED') }}'"
+          - "Second device: '{{ second_device_type | default('NOT_PROVIDED') }}'"
+
+    ###########################################################################
+    # NORMALIZE: Clean up room variable (trim whitespace, lowercase)
+    ###########################################################################
+    - name: Normalize room variable
+      set_fact:
+        room_normalized: "{{ (room | default('') | string | trim | lower) }}"
+      when: room is defined
+
+    - name: Debug - Show normalized room
+      debug:
+        msg: "Normalized room: '{{ room_normalized | default('NOT_SET') }}'"
+
+    ###########################################################################
+    # TASK: Identify the switch that owns this room
+    ###########################################################################
     - name: Find Switch for Given Room
       set_fact:
         switch_name: "{{ item.key }}"
       loop: "{{ switch_mapping | dict2items }}"
       when:
-        - room is defined
-        - room | length > 0
-        - (room | lower) in (item.value | map('lower') | list)
+        - room_normalized is defined
+        - room_normalized | length > 0
+        - room_normalized in (item.value | map('lower') | list)
 
+    - name: Debug - Show found switch
+      debug:
+        msg: "Found switch: {{ switch_name | default('NO_MATCH') }}"
+
+    # Defensive check: fail early if room isn't mapped to any switch.
     - name: Fail if No Matching Switch is Found
       fail:
-        msg: "No switch found for room {{ room }}. Check switch_mapping.yml"
+        msg: |
+          No switch found for room '{{ room_normalized | default(room | default('UNDEFINED')) }}'.
+          
+          Available switches in switch_mapping.yml:
+          {{ switch_mapping.keys() | list | to_nice_yaml }}
+          
+          Please check:
+          1. Room format matches entries in switch_mapping.yml
+          2. Room is spelled correctly
+          3. Room exists in one of the switch mappings
       when: switch_name is not defined
 
+    ###########################################################################
+    # TASK: Normalize the provided port (wall point vs direct port)
+    ###########################################################################
     - name: Convert wall point label to actual switch port (if mapping exists)
       set_fact:
         actual_port_number: "{{ wall_point_mapping[port_number] }}"
@@ -76,23 +121,34 @@
         - port_number is defined
         - port_number not in wall_point_mapping
 
+    - name: Debug - Show port resolution
+      debug:
+        msg: "Port: {{ port_number | default('NOT_PROVIDED') }} -> {{ actual_port_number | default('NOT_RESOLVED') }}"
+
+    # Defensive check: ensure we have a valid port for subsequent config.
     - name: Fail if Port Number Not Provided
       fail:
-        msg: "Port number is required"
+        msg: "Port number is required but not provided or is empty"
       when: actual_port_number is not defined or (actual_port_number | string) == ""
 
+    ###########################################################################
+    # TASK: Build a base, human-friendly interface label
+    ###########################################################################
     - name: Compute base interface label
       set_fact:
         interface_base_label: >-
           {{
             interface_descriptions.get(
-              room,
-              'Port_' ~ (room | string) ~ '_WP' ~ (port_number | string)
+              room_normalized,
+              'Port_' ~ (room_normalized | string) ~ '_WP' ~ (port_number | string)
             )
-            if room is defined and room is not none and (room | string) | length > 0
+            if room_normalized is defined and room_normalized is not none and (room_normalized | string) | length > 0
             else 'Port_WP' ~ (port_number | string)
           }}
 
+    ###########################################################################
+    # TASK: Create device suffixes for the interface name
+    ###########################################################################
     - name: Build device labels
       set_fact:
         device_label_1: "{{ (device_name | default(device_type | default('')) | string) | trim | lower }}"
@@ -113,6 +169,13 @@
             interface_base_label
           }}{{ '_' ~ (device_suffix_list | join('_')) if (device_suffix_list | length) > 0 else '' }}
 
+    - name: Debug - Show final interface description
+      debug:
+        msg: "Final interface name: '{{ interface_description_final }}'"
+
+    ###########################################################################
+    # TASK: Inject a dynamic host so Play 2 can target the real switch
+    ###########################################################################
     - name: Add Resolved Switch to Inventory
       add_host:
         name: "{{ switch_name }}"
@@ -243,4 +306,4 @@
 
     - name: Configuration Complete
       debug:
-        msg: "Interface {{ ansible_port_number }} on {{ inventory_hostname }} configured successfully!"
+        msg: "✅ Interface {{ ansible_port_number }} on {{ inventory_hostname }} configured successfully!"
